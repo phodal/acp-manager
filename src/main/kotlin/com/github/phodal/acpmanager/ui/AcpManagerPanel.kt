@@ -206,7 +206,7 @@ class AcpManagerPanel(
 
         scope.launch(Dispatchers.IO) {
             try {
-                // Connect the agent
+                // Connect the agent - this triggers sessionKeys update
                 val session = sessionManager.connectAgent(agentKey)
 
                 // Update status to connected
@@ -214,11 +214,24 @@ class AcpManagerPanel(
                     welcomeToolbar?.updateAgentStatus(agentKey, AgentConnectionStatus.CONNECTED)
                 }
 
-                // Send the initial message directly - no delay needed since we have the session
-                log.info("Agent '$agentKey' connected, sending initial message")
+                // Wait for ChatPanel to be created and start observing
+                // This ensures the ChatPanel is ready to receive state updates
+                var retries = 0
+                while (!chatPanels.containsKey(agentKey) && retries < 50) {
+                    delay(20)
+                    retries++
+                }
+
+                if (!chatPanels.containsKey(agentKey)) {
+                    log.warn("ChatPanel for '$agentKey' was not created in time, sending message anyway")
+                }
+
+                // Send the initial message
+                log.info("Agent '$agentKey' connected, sending initial message: ${initialMessage.take(50)}...")
                 session.sendMessage(initialMessage)
+                log.info("Initial message sent to '$agentKey'")
             } catch (e: Exception) {
-                log.warn("Failed to start session with agent '$agentKey'", e)
+                log.warn("Failed to start session with agent '$agentKey': ${e.message}", e)
                 ApplicationManager.getApplication().invokeLater {
                     welcomeToolbar?.updateAgentStatus(agentKey, AgentConnectionStatus.ERROR)
                     Messages.showErrorDialog(
@@ -234,6 +247,7 @@ class AcpManagerPanel(
     private fun startSessionObserver() {
         scope.launch {
             sessionManager.sessionKeys.collectLatest { keys ->
+                log.info("AcpManagerPanel: sessionKeys changed: $keys")
                 ApplicationManager.getApplication().invokeLater {
                     updateUI(keys)
                 }
@@ -259,6 +273,8 @@ class AcpManagerPanel(
     }
 
     private fun updateUI(sessionKeys: List<String>) {
+        log.info("AcpManagerPanel: updateUI called with sessionKeys=$sessionKeys, existing chatPanels=${chatPanels.keys}")
+
         // Remove tabs for disconnected sessions
         val existingKeys = chatPanels.keys.toList()
         existingKeys.forEach { key ->
@@ -276,6 +292,7 @@ class AcpManagerPanel(
         // Add/update tabs for connected sessions
         sessionKeys.forEach { key ->
             if (!chatPanels.containsKey(key)) {
+                log.info("AcpManagerPanel: Creating ChatPanel for '$key'")
                 // Get or create session
                 val session = sessionManager.getOrCreateSession(key)
 
@@ -346,6 +363,7 @@ class AcpManagerPanel(
                         AgentConnectionStatus.CONNECTING -> "[...]"
                         AgentConnectionStatus.ERROR -> "[ERR]"
                         AgentConnectionStatus.DISCONNECTED -> "[ ]"
+                        AgentConnectionStatus.UNAVAILABLE -> "[N/A]"
                     }
                     appendLine("$statusIcon $key: ${agent.command} ${agent.args.joinToString(" ")}")
                 }

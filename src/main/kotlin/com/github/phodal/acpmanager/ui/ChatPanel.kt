@@ -99,13 +99,20 @@ class ChatPanel(
         add(scrollPane, BorderLayout.CENTER)
         add(inputPanel, BorderLayout.SOUTH)
 
-        // Start observing state changes
+        // Immediately render current state (synchronously)
+        val currentState = session.state.value
+        log.info("ChatPanel: Initial state for '${session.agentKey}': messages=${currentState.messages.size}, connected=${currentState.isConnected}")
+        updateUI(currentState)
+
+        // Start observing state changes for future updates
         startStateObserver()
     }
 
     private fun startStateObserver() {
-        scope.launch {
+        scope.launch(Dispatchers.Default) {
+            log.info("ChatPanel: Starting state observer for '${session.agentKey}'")
             session.state.collectLatest { state ->
+                log.info("ChatPanel: Received state update for '${session.agentKey}': messages=${state.messages.size}, streaming='${state.currentStreamingText.take(20)}...', processing=${state.isProcessing}")
                 ApplicationManager.getApplication().invokeLater {
                     updateUI(state)
                 }
@@ -114,6 +121,8 @@ class ChatPanel(
     }
 
     private fun updateUI(state: AgentSessionState) {
+        log.info("ChatPanel: updateUI called for '${session.agentKey}': messages=${state.messages.size}, streaming='${state.currentStreamingText.take(20)}...'")
+
         // Update toolbar
         inputToolbar.setProcessing(state.isProcessing)
         inputToolbar.setSendEnabled(!state.isProcessing && state.isConnected)
@@ -138,6 +147,7 @@ class ChatPanel(
 
         // Update messages
         if (state.messages.size != lastRenderedMessageCount) {
+            log.info("ChatPanel: Rendering ${state.messages.size} messages (was $lastRenderedMessageCount)")
             renderMessages(state.messages)
             lastRenderedMessageCount = state.messages.size
         }
@@ -236,6 +246,7 @@ class ChatPanel(
         val text = inputArea.text?.trim() ?: return
         if (text.isBlank()) return
 
+        log.info("sendMessage called for agent '${session.agentKey}' with text length=${text.length}")
         inputArea.text = ""
 
         scope.launch(Dispatchers.IO) {
@@ -245,9 +256,13 @@ class ChatPanel(
                     log.info("Session '${session.agentKey}' not connected, attempting to connect first")
                     val configService = AcpConfigService.getInstance(project)
                     val config = configService.getAgentConfig(session.agentKey)
+                    log.info("Got config for '${session.agentKey}': ${config?.command} ${config?.args?.joinToString(" ")}")
                     if (config != null) {
+                        log.info("Connecting to agent '${session.agentKey}'...")
                         session.connect(config)
+                        log.info("Connected to agent '${session.agentKey}', isConnected=${session.isConnected}")
                     } else {
+                        log.warn("Agent config not found for '${session.agentKey}'")
                         ApplicationManager.getApplication().invokeLater {
                             inputToolbar.setStatusText("Error: Agent config not found")
                         }
@@ -255,7 +270,9 @@ class ChatPanel(
                     }
                 }
 
+                log.info("Sending message to agent '${session.agentKey}'...")
                 session.sendMessage(text)
+                log.info("Message sent to agent '${session.agentKey}'")
             } catch (e: Exception) {
                 log.warn("Failed to send message to '${session.agentKey}'", e)
                 ApplicationManager.getApplication().invokeLater {

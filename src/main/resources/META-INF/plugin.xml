@@ -31,5 +31,6 @@
 
         <projectService serviceImplementation="com.github.phodal.acpmanager.config.AcpConfigService"/>
         <projectService serviceImplementation="com.github.phodal.acpmanager.acp.AcpSessionManager"/>
+        <projectService serviceImplementation="com.github.phodal.acpmanager.ide.IdeAcpClient"/>
     </extensions>
 </idea-plugin>

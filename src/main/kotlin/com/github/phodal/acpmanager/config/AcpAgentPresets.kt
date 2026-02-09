@@ -62,12 +62,14 @@ object AcpAgentPresets {
             description = "Anthropic Claude Code (native ACP support)",
             nonStandardApi = true,
         ),
+        // Codex requires codex-acp wrapper: https://github.com/cola-io/codex-acp
+        // Install with: npm install -g codex-acp
         AcpAgentPreset(
             id = "codex",
             name = "Codex",
-            command = "codex",
-            args = listOf("--acp"),
-            description = "OpenAI Codex CLI"
+            command = "codex-acp",
+            args = emptyList(),
+            description = "OpenAI Codex CLI (via codex-acp wrapper)"
         ),
         AcpAgentPreset(
             id = "copilot",
@@ -100,20 +102,27 @@ object AcpAgentPresets {
     }
 
     /**
-     * Find absolute path of an executable using `which` (Unix/macOS) or `where` (Windows).
+     * Check if a command is available in PATH.
+     * Returns the resolved path if available, null otherwise.
      */
-    private fun findExecutable(command: String): String? {
+    fun findExecutable(command: String): String? {
         return try {
+            // If command is already an absolute path, check if it exists
+            val file = java.io.File(command)
+            if (file.isAbsolute) {
+                return if (file.exists() && file.canExecute()) command else null
+            }
+
             val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
             val checkCmd = if (isWindows) listOf("where", command) else listOf("which", command)
-            
+
             val process = ProcessBuilder(checkCmd)
                 .redirectErrorStream(true)
                 .start()
-            
+
             val output = process.inputStream.bufferedReader().readText().trim()
             val exitCode = process.waitFor()
-            
+
             if (exitCode == 0 && output.isNotBlank()) {
                 // On Windows, `where` may return multiple lines; take the first
                 output.lines().firstOrNull()?.trim()
@@ -123,5 +132,12 @@ object AcpAgentPresets {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Check if a command is available (either in PATH or as absolute path).
+     */
+    fun isCommandAvailable(command: String): Boolean {
+        return findExecutable(command) != null
     }
 }

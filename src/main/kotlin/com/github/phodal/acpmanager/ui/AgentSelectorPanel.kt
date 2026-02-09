@@ -3,7 +3,9 @@ package com.github.phodal.acpmanager.ui
 import com.github.phodal.acpmanager.acp.AcpProcessManager
 import com.github.phodal.acpmanager.acp.AcpSessionManager
 import com.github.phodal.acpmanager.config.AcpAgentConfig
+import com.github.phodal.acpmanager.config.AcpAgentPresets
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
@@ -24,6 +26,8 @@ enum class AgentConnectionStatus {
     DISCONNECTED,
     /** Agent connection failed or process crashed */
     ERROR,
+    /** Agent command is not available (not found in PATH) */
+    UNAVAILABLE,
 }
 
 /**
@@ -40,6 +44,8 @@ enum class AgentConnectionStatus {
 class AgentSelectorPanel(
     private val project: Project,
 ) : JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)) {
+
+    private val log = Logger.getInstance(AgentSelectorPanel::class.java)
 
     private val agentComboBox = JComboBox<AgentDisplayItem>()
     private var agents: Map<String, AcpAgentConfig> = emptyMap()
@@ -58,7 +64,8 @@ class AgentSelectorPanel(
     init {
         isOpaque = false
 
-        agentComboBox.renderer = AgentListCellRenderer()
+        // Pass agentStatuses to renderer so it can get the latest status
+        agentComboBox.renderer = AgentListCellRenderer { key -> agentStatuses[key] }
         agentComboBox.preferredSize = Dimension(220, 28)
         agentComboBox.addActionListener {
             if (isUpdating) return@addActionListener
@@ -103,14 +110,21 @@ class AgentSelectorPanel(
     }
 
     /**
-     * Refresh all agent statuses by checking process manager and session manager.
+     * Refresh all agent statuses by checking command availability, process manager and session manager.
      */
     fun refreshAllStatuses() {
         val processManager = AcpProcessManager.getInstance()
         val sessionManager = AcpSessionManager.getInstance(project)
 
+        log.info("Refreshing agent statuses for ${agentKeys.size} agents")
+
         for (key in agentKeys) {
-            val status = resolveAgentStatus(key, processManager, sessionManager)
+            val config = agents[key]
+            val status = resolveAgentStatus(key, config, processManager, sessionManager)
+            val oldStatus = agentStatuses[key]
+            if (oldStatus != status) {
+                log.info("Agent '$key' status changed: $oldStatus -> $status")
+            }
             agentStatuses[key] = status
         }
         agentComboBox.repaint()
@@ -152,11 +166,24 @@ class AgentSelectorPanel(
 
     private fun resolveAgentStatus(
         agentKey: String,
+        config: AcpAgentConfig?,
         processManager: AcpProcessManager,
         sessionManager: AcpSessionManager,
     ): AgentConnectionStatus {
+        // First check if command is available
+        if (config != null) {
+            val command = config.command
+            val isAvailable = AcpAgentPresets.isCommandAvailable(command)
+            log.debug("Agent '$agentKey' command='$command' available=$isAvailable")
+            if (!isAvailable) {
+                return AgentConnectionStatus.UNAVAILABLE
+            }
+        }
+
         val session = sessionManager.getSession(agentKey)
         val processRunning = processManager.isRunning(agentKey)
+
+        log.debug("Agent '$agentKey': session=${session != null}, isConnected=${session?.isConnected}, processRunning=$processRunning")
 
         return when {
             session != null && session.isConnected -> AgentConnectionStatus.CONNECTED
@@ -214,8 +241,13 @@ data class AgentDisplayItem(
 
 /**
  * Custom cell renderer that draws a colored status dot next to the agent name.
+ *
+ * @param statusProvider A function that returns the current status for a given agent key.
+ *                       This allows the renderer to always use the latest status from the map.
  */
-class AgentListCellRenderer : ListCellRenderer<AgentDisplayItem> {
+class AgentListCellRenderer(
+    private val statusProvider: (String) -> AgentConnectionStatus?
+) : ListCellRenderer<AgentDisplayItem> {
     private val panel = JPanel(BorderLayout())
     private val dotLabel = JBLabel()
     private val nameLabel = JBLabel()
@@ -268,10 +300,12 @@ class AgentListCellRenderer : ListCellRenderer<AgentDisplayItem> {
         nameLabel.font = UIUtil.getLabelFont()
 
         // Status dot (Unicode circle character)
+        // Use statusProvider to get the latest status, falling back to the item's status
+        val currentStatus = statusProvider(value.key) ?: value.status
         dotLabel.icon = null
         dotLabel.text = "\u25CF" // filled circle
         dotLabel.font = dotLabel.font.deriveFont(10f)
-        dotLabel.foreground = getStatusColor(value.status)
+        dotLabel.foreground = getStatusColor(currentStatus)
 
         return panel
     }
@@ -282,7 +316,8 @@ class AgentListCellRenderer : ListCellRenderer<AgentDisplayItem> {
                 AgentConnectionStatus.CONNECTED -> JBColor(Color(0x4CAF50), Color(0x81C784))     // Green
                 AgentConnectionStatus.CONNECTING -> JBColor(Color(0xFFC107), Color(0xFFD54F))    // Yellow/Amber
                 AgentConnectionStatus.ERROR -> JBColor(Color(0xF44336), Color(0xEF9A9A))         // Red
-                AgentConnectionStatus.DISCONNECTED -> JBColor(Color(0x9E9E9E), Color(0x757575))  // Gray
+                AgentConnectionStatus.DISCONNECTED -> JBColor(Color(0x2196F3), Color(0x64B5F6)) // Blue (ready to connect)
+                AgentConnectionStatus.UNAVAILABLE -> JBColor(Color(0x9E9E9E), Color(0x757575))  // Gray (command not found)
             }
         }
     }
