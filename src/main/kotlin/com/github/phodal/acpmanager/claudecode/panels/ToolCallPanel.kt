@@ -136,11 +136,7 @@ class ToolCallPanel(
             summaryLabel.text = if (output.length > 60) "$summary..." else summary
             summaryLabel.foreground = color
             summaryLabel.isVisible = !isExpanded
-
-            // Auto-expand if output is short enough to be useful
-            if (output.length < 200) {
-                isExpanded = true
-            }
+            // Keep collapsed by default - user can expand if needed
         } else {
             // For completed without output, show "Done" summary
             summaryLabel.text = if (status == ToolCallStatus.COMPLETED) "Done" else "Failed"

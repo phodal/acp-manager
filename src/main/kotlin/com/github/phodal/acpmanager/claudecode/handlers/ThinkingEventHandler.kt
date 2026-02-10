@@ -1,7 +1,7 @@
 package com.github.phodal.acpmanager.claudecode.handlers
 
 import com.github.phodal.acpmanager.claudecode.context.RenderContext
-import com.github.phodal.acpmanager.claudecode.panels.SimpleStreamingPanel
+import com.github.phodal.acpmanager.claudecode.panels.CollapsibleThinkingPanel
 import com.github.phodal.acpmanager.ui.renderer.RenderEvent
 import kotlin.reflect.KClass
 
@@ -31,7 +31,7 @@ class ThinkingEventHandler : MultiEventHandler() {
         context.thinkingBuffer.clear()
         context.currentThinkingSignature = null
 
-        val panel = SimpleStreamingPanel("💡 Thinking", context.colors.thinkingFg)
+        val panel = CollapsibleThinkingPanel(context.colors.thinkingFg)
         context.currentThinkingPanel = panel
         context.addPanel(panel.component)
         context.scrollToBottom()
@@ -39,13 +39,13 @@ class ThinkingEventHandler : MultiEventHandler() {
 
     private fun handleChunk(event: RenderEvent.ThinkingChunk, context: RenderContext) {
         context.thinkingBuffer.append(event.content)
-        (context.currentThinkingPanel as? SimpleStreamingPanel)?.updateContent(
+        (context.currentThinkingPanel as? CollapsibleThinkingPanel)?.updateContent(
             context.thinkingBuffer.toString()
         )
     }
 
     private fun handleEnd(event: RenderEvent.ThinkingEnd, context: RenderContext) {
-        (context.currentThinkingPanel as? SimpleStreamingPanel)?.finalize(
+        (context.currentThinkingPanel as? CollapsibleThinkingPanel)?.finalize(
             event.fullContent,
             context.currentThinkingSignature
         )
