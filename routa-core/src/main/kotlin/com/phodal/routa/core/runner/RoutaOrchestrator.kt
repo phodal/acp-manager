@@ -1,0 +1,368 @@
+package com.phodal.routa.core.runner
+
+import com.phodal.routa.core.RoutaSystem
+import com.phodal.routa.core.coordinator.CoordinationPhase
+import com.phodal.routa.core.model.*
+import kotlinx.serialization.json.Json
+
+/**
+ * The multi-agent orchestration loop.
+ *
+ * Implements the full ROUTA → CRAFTER → GATE workflow:
+ *
+ * ```
+ * User Request
+ *   → ROUTA plans (@@@task blocks)
+ *     → Wave of CRAFTER agents execute tasks
+ *       → Each CRAFTER reports completion
+ *         → GATE verifies all work
+ *           → APPROVED: done
+ *           → NOT APPROVED: fix tasks → CRAFTER again
+ * ```
+ *
+ * Each agent is run via the [AgentRunner] abstraction, which can be backed
+ * by Koog AIAgent (real LLM) or a mock for testing.
+ *
+ * **Tool calling strategy:**
+ * - If the LLM supports function calling (via Koog), tools like `report_to_parent`
+ *   are called automatically and update the stores.
+ * - If the LLM only produces text, the orchestrator parses the output and
+ *   calls the appropriate tools on behalf of the agent.
+ *
+ * Usage:
+ * ```kotlin
+ * val orchestrator = RoutaOrchestrator(routa, agentRunner, "my-workspace")
+ * val result = orchestrator.execute("Add user authentication to the API")
+ * ```
+ */
+class RoutaOrchestrator(
+    private val routa: RoutaSystem,
+    private val runner: AgentRunner,
+    private val workspaceId: String,
+    private val maxWaves: Int = 3,
+    private val onPhaseChange: (suspend (OrchestratorPhase) -> Unit)? = null,
+) {
+
+    private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
+
+    /**
+     * Execute the full multi-agent orchestration flow.
+     *
+     * @param userRequest The user's requirement/task description.
+     * @return The orchestration result.
+     */
+    suspend fun execute(userRequest: String): OrchestratorResult {
+        emitPhase(OrchestratorPhase.Initializing)
+
+        // ── Phase 1: ROUTA plans ────────────────────────────────────────
+        emitPhase(OrchestratorPhase.Planning)
+
+        val routaAgentId = routa.coordinator.initialize(workspaceId)
+
+        val planPrompt = buildString {
+            appendLine("## User Request")
+            appendLine()
+            appendLine(userRequest)
+            appendLine()
+            appendLine("---")
+            appendLine()
+            appendLine("Please analyze this request and break it down into @@@task blocks.")
+            appendLine("Each task should have: Title, Objective, Scope, Definition of Done, and Verification commands.")
+            appendLine("Use the @@@task ... @@@ format as specified in your instructions.")
+        }
+
+        val planOutput = runner.run(AgentRole.ROUTA, routaAgentId, planPrompt)
+
+        emitPhase(OrchestratorPhase.PlanReady(planOutput))
+
+        // ── Phase 2: Parse and register tasks ───────────────────────────
+
+        val taskIds = routa.coordinator.registerTasks(planOutput)
+        if (taskIds.isEmpty()) {
+            return OrchestratorResult.NoTasks(planOutput)
+        }
+
+        emitPhase(OrchestratorPhase.TasksRegistered(taskIds.size))
+
+        // ── Phase 3: Execute waves ──────────────────────────────────────
+
+        for (wave in 1..maxWaves) {
+            emitPhase(OrchestratorPhase.WaveStarting(wave))
+
+            // Execute all ready tasks with CRAFTER agents
+            val delegations = routa.coordinator.executeNextWave()
+            if (delegations.isEmpty()) {
+                // No more tasks to execute, check if we're done
+                val phase = routa.coordinator.coordinationState.value.phase
+                if (phase == CoordinationPhase.COMPLETED) {
+                    break
+                }
+                continue
+            }
+
+            // Run each CRAFTER
+            for ((crafterId, taskId) in delegations) {
+                emitPhase(OrchestratorPhase.CrafterRunning(crafterId, taskId))
+
+                val context = routa.coordinator.buildAgentContext(crafterId) ?: continue
+                val crafterOutput = runner.run(AgentRole.CRAFTER, crafterId, context)
+
+                // Ensure the CRAFTER's work is reported
+                // (If Koog tool calling worked, report_to_parent was already called.
+                //  If not, we do it here based on the text output.)
+                ensureCrafterReport(crafterId, taskId, crafterOutput)
+
+                emitPhase(OrchestratorPhase.CrafterCompleted(crafterId, taskId))
+            }
+
+            // ── Phase 4: GATE verifies ──────────────────────────────────
+
+            emitPhase(OrchestratorPhase.VerificationStarting(wave))
+
+            val gateAgentId = routa.coordinator.startVerification()
+            if (gateAgentId == null) {
+                // No tasks need verification → we're done
+                break
+            }
+
+            val gateContext = buildGateContext(gateAgentId)
+            val gateOutput = runner.run(AgentRole.GATE, gateAgentId, gateContext)
+
+            // Ensure the GATE's verdict is reported
+            ensureGateReport(gateAgentId, gateOutput)
+
+            emitPhase(OrchestratorPhase.VerificationCompleted(gateAgentId, gateOutput))
+
+            // ── Phase 5: Check verdict (store-based, not event-based) ───
+            // We check task statuses directly rather than relying on async events
+            // because the event handler runs in a separate coroutine.
+
+            val allTasks = routa.context.taskStore.listByWorkspace(workspaceId)
+            val needsFixTasks = allTasks.filter { it.status == TaskStatus.NEEDS_FIX }
+            val completedTasks = allTasks.filter { it.status == TaskStatus.COMPLETED }
+
+            when {
+                allTasks.isNotEmpty() && allTasks.all { it.status == TaskStatus.COMPLETED } -> {
+                    emitPhase(OrchestratorPhase.Completed)
+                    return buildSuccessResult()
+                }
+                needsFixTasks.isNotEmpty() -> {
+                    emitPhase(OrchestratorPhase.NeedsFix(wave))
+                    // Reset NEEDS_FIX tasks to PENDING for next wave
+                    resetNeedsFixTasks()
+                    continue
+                }
+                else -> {
+                    // Might have more tasks to process
+                    continue
+                }
+            }
+        }
+
+        // Final check (store-based)
+        val finalTasks = routa.context.taskStore.listByWorkspace(workspaceId)
+        return if (finalTasks.isNotEmpty() && finalTasks.all { it.status == TaskStatus.COMPLETED }) {
+            emitPhase(OrchestratorPhase.Completed)
+            buildSuccessResult()
+        } else {
+            emitPhase(OrchestratorPhase.MaxWavesReached(maxWaves))
+            OrchestratorResult.MaxWavesReached(maxWaves, routa.coordinator.getTaskSummary())
+        }
+    }
+
+    // ── Ensure reports are filed ────────────────────────────────────────
+
+    /**
+     * If the CRAFTER didn't call report_to_parent via tool call,
+     * do it on their behalf based on the text output.
+     */
+    private suspend fun ensureCrafterReport(crafterId: String, taskId: String, output: String) {
+        val agent = routa.context.agentStore.get(crafterId) ?: return
+
+        // If agent is already COMPLETED, Koog tool calling handled it
+        if (agent.status == AgentStatus.COMPLETED) return
+
+        // Agent didn't call report_to_parent — do it for them
+        val report = CompletionReport(
+            agentId = crafterId,
+            taskId = taskId,
+            summary = extractSummary(output),
+            filesModified = extractFilesModified(output),
+            success = !output.contains("FAILED", ignoreCase = true) &&
+                !output.contains("ERROR", ignoreCase = true),
+        )
+
+        routa.tools.reportToParent(crafterId, report)
+    }
+
+    /**
+     * If the GATE didn't call report_to_parent via tool call,
+     * parse the verdict from text and do it for them.
+     */
+    private suspend fun ensureGateReport(gateAgentId: String, output: String) {
+        val agent = routa.context.agentStore.get(gateAgentId) ?: return
+
+        // If agent is already COMPLETED, Koog tool calling handled it
+        if (agent.status == AgentStatus.COMPLETED) return
+
+        // Parse verdict from output
+        val approved = output.contains("APPROVED", ignoreCase = true) &&
+            !output.contains("NOT APPROVED", ignoreCase = true) &&
+            !output.contains("NOT_APPROVED", ignoreCase = true)
+
+        // Find all tasks being verified
+        val state = routa.coordinator.coordinationState.value
+        val reviewTasks = routa.context.taskStore.listByStatus(workspaceId, TaskStatus.REVIEW_REQUIRED)
+
+        for (task in reviewTasks) {
+            val report = CompletionReport(
+                agentId = gateAgentId,
+                taskId = task.id,
+                summary = extractSummary(output),
+                success = approved,
+            )
+            routa.tools.reportToParent(gateAgentId, report)
+        }
+    }
+
+    // ── Context building ────────────────────────────────────────────────
+
+    /**
+     * Build the verification context for the GATE agent.
+     * Includes all completed tasks, their CRAFTER reports, and acceptance criteria.
+     */
+    private suspend fun buildGateContext(gateAgentId: String): String {
+        val roleContext = routa.coordinator.buildAgentContext(gateAgentId) ?: ""
+        val state = routa.coordinator.coordinationState.value
+        val tasks = routa.context.taskStore.listByStatus(workspaceId, TaskStatus.REVIEW_REQUIRED)
+
+        return buildString {
+            appendLine(roleContext)
+            appendLine()
+            appendLine("---")
+            appendLine()
+            appendLine("# Tasks to Verify")
+            appendLine()
+
+            for (task in tasks) {
+                appendLine("## ${task.title}")
+                appendLine()
+                appendLine("**Objective:** ${task.objective}")
+                appendLine()
+
+                if (task.acceptanceCriteria.isNotEmpty()) {
+                    appendLine("**Acceptance Criteria:**")
+                    task.acceptanceCriteria.forEach { appendLine("- $it") }
+                    appendLine()
+                }
+
+                if (task.completionSummary != null) {
+                    appendLine("**Crafter Report:** ${task.completionSummary}")
+                    appendLine()
+                }
+
+                // Include CRAFTER conversation for evidence
+                val crafterId = task.assignedTo
+                if (crafterId != null) {
+                    val conversation = routa.context.conversationStore.getLastN(crafterId, 5)
+                    if (conversation.isNotEmpty()) {
+                        appendLine("**Crafter Conversation (last ${conversation.size} messages):**")
+                        for (msg in conversation) {
+                            appendLine("> [${msg.role}]: ${msg.content.take(500)}")
+                        }
+                        appendLine()
+                    }
+                }
+
+                if (task.verificationCommands.isNotEmpty()) {
+                    appendLine("**Verification Commands:**")
+                    task.verificationCommands.forEach { appendLine("- `$it`") }
+                    appendLine()
+                }
+
+                appendLine("---")
+            }
+
+            appendLine()
+            appendLine("Please verify each task against its Acceptance Criteria.")
+            appendLine("Output your verdict: ✅ APPROVED or ❌ NOT APPROVED, with evidence.")
+        }
+    }
+
+    /**
+     * Reset NEEDS_FIX tasks back to PENDING for the next wave.
+     */
+    private suspend fun resetNeedsFixTasks() {
+        val tasks = routa.context.taskStore.listByStatus(workspaceId, TaskStatus.NEEDS_FIX)
+        for (task in tasks) {
+            routa.context.taskStore.save(
+                task.copy(
+                    status = TaskStatus.PENDING,
+                    assignedTo = null,
+                    updatedAt = java.time.Instant.now().toString(),
+                )
+            )
+        }
+    }
+
+    // ── Output parsing helpers ──────────────────────────────────────────
+
+    /**
+     * Extract a summary from agent output (first 2-3 sentences or lines).
+     */
+    private fun extractSummary(output: String): String {
+        val lines = output.lines().filter { it.isNotBlank() }
+        return lines.take(3).joinToString(" ").take(500)
+    }
+
+    /**
+     * Try to extract file paths mentioned in the output.
+     */
+    private fun extractFilesModified(output: String): List<String> {
+        val fileRegex = Regex("""(?:src|lib|app|test)/[\w/.-]+\.\w+""")
+        return fileRegex.findAll(output).map { it.value }.distinct().toList()
+    }
+
+    private suspend fun buildSuccessResult(): OrchestratorResult.Success {
+        val summary = routa.coordinator.getTaskSummary()
+        return OrchestratorResult.Success(summary)
+    }
+
+    private suspend fun emitPhase(phase: OrchestratorPhase) {
+        onPhaseChange?.invoke(phase)
+    }
+}
+
+// ── Orchestrator phases (for UI/CLI callbacks) ──────────────────────────
+
+sealed class OrchestratorPhase {
+    data object Initializing : OrchestratorPhase()
+    data object Planning : OrchestratorPhase()
+    data class PlanReady(val planOutput: String) : OrchestratorPhase()
+    data class TasksRegistered(val count: Int) : OrchestratorPhase()
+    data class WaveStarting(val wave: Int) : OrchestratorPhase()
+    data class CrafterRunning(val crafterId: String, val taskId: String) : OrchestratorPhase()
+    data class CrafterCompleted(val crafterId: String, val taskId: String) : OrchestratorPhase()
+    data class VerificationStarting(val wave: Int) : OrchestratorPhase()
+    data class VerificationCompleted(val gateId: String, val output: String) : OrchestratorPhase()
+    data class NeedsFix(val wave: Int) : OrchestratorPhase()
+    data object Completed : OrchestratorPhase()
+    data class MaxWavesReached(val waves: Int) : OrchestratorPhase()
+}
+
+// ── Orchestrator results ────────────────────────────────────────────────
+
+sealed class OrchestratorResult {
+    data class Success(
+        val taskSummaries: List<com.phodal.routa.core.coordinator.TaskSummary>,
+    ) : OrchestratorResult()
+
+    data class NoTasks(val planOutput: String) : OrchestratorResult()
+
+    data class MaxWavesReached(
+        val waves: Int,
+        val taskSummaries: List<com.phodal.routa.core.coordinator.TaskSummary>,
+    ) : OrchestratorResult()
+
+    data class Failed(val error: String) : OrchestratorResult()
+}

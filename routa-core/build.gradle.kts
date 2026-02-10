@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.kotlin)
     alias(libs.plugins.kotlinSerialization)
+    application
 }
 
 group = "com.phodal.routa"
@@ -8,6 +9,10 @@ version = "0.1.0"
 
 kotlin {
     jvmToolchain(21)
+}
+
+application {
+    mainClass.set("com.phodal.routa.core.cli.RoutaCliKt")
 }
 
 repositories {
