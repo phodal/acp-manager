@@ -1,0 +1,5 @@
+<!-- Optional Kotlin plugin support configuration -->
+<idea-plugin>
+    <!-- This file is loaded only when the Kotlin plugin is available -->
+</idea-plugin>
+

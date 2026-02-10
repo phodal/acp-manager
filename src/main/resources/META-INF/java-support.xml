@@ -1,0 +1,5 @@
+<!-- Optional Java plugin support configuration -->
+<idea-plugin>
+    <!-- This file is loaded only when the Java plugin is available -->
+</idea-plugin>
+

@@ -5,12 +5,12 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
-import com.intellij.psi.PsiMethod
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.openapi.extensions.PluginId
 import javax.swing.Icon
 
 private val log = logger<SymbolMentionProvider>()
@@ -30,6 +30,12 @@ class SymbolMentionProvider(private val project: Project) : MentionProvider {
     override fun getMentionType(): MentionType = MentionType.SYMBOL
 
     override fun getMentions(query: String): List<MentionItem> {
+        // Check if Java plugin is available before attempting to extract symbols
+        if (!isJavaPluginAvailable()) {
+            log.debug("Java plugin not available, skipping symbol extraction")
+            return emptyList()
+        }
+
         val psiFile = getCurrentPsiFile() ?: return emptyList()
 
         val symbols = extractSymbols(psiFile)
@@ -49,6 +55,16 @@ class SymbolMentionProvider(private val project: Project) : MentionProvider {
             .map { it.first }
     }
 
+    private fun isJavaPluginAvailable(): Boolean {
+        return try {
+            val javaPluginId = PluginId.getId("com.intellij.java")
+            PluginManagerCore.getPlugin(javaPluginId) != null
+        } catch (e: Exception) {
+            log.debug("Error checking Java plugin availability: ${e.message}")
+            false
+        }
+    }
+
     private fun getCurrentPsiFile(): PsiFile? {
         // Try to get from FileEditorManager first (production)
         val virtualFile = FileEditorManager.getInstance(project).selectedTextEditor?.virtualFile
@@ -61,34 +77,67 @@ class SymbolMentionProvider(private val project: Project) : MentionProvider {
     private fun extractSymbols(psiFile: PsiFile): List<Symbol> {
         val symbols = mutableListOf<Symbol>()
 
-        // Extract classes
-        PsiTreeUtil.findChildrenOfType(psiFile, PsiClass::class.java).forEach { psiClass ->
-            if (!psiClass.isInterface && !psiClass.isEnum) {
-                symbols.add(
-                    Symbol(
-                        name = psiClass.name ?: "Anonymous",
-                        kind = "class",
-                        lineNumber = getLineNumber(psiClass),
-                        icon = AllIcons.Nodes.Class,
-                        containingClass = null
-                    )
-                )
+        try {
+            // Use reflection to safely access PsiClass and PsiMethod
+            val psiClassClass = Class.forName("com.intellij.psi.PsiClass")
+            val psiMethodClass = Class.forName("com.intellij.psi.PsiMethod")
+
+            // Extract classes
+            @Suppress("UNCHECKED_CAST")
+            val classes = PsiTreeUtil.findChildrenOfType(psiFile, psiClassClass as Class<PsiElement>)
+            classes.forEach { psiClass ->
+                try {
+                    val isInterface = psiClass.javaClass.getMethod("isInterface").invoke(psiClass) as Boolean
+                    val isEnum = psiClass.javaClass.getMethod("isEnum").invoke(psiClass) as Boolean
+
+                    if (!isInterface && !isEnum) {
+                        val name = psiClass.javaClass.getMethod("getName").invoke(psiClass) as? String ?: "Anonymous"
+                        symbols.add(
+                            Symbol(
+                                name = name,
+                                kind = "class",
+                                lineNumber = getLineNumber(psiClass),
+                                icon = AllIcons.Nodes.Class,
+                                containingClass = null
+                            )
+                        )
+                    }
+                } catch (e: Exception) {
+                    log.debug("Error extracting class symbol: ${e.message}")
+                }
             }
-        }
 
-        // Extract methods
-        PsiTreeUtil.findChildrenOfType(psiFile, PsiMethod::class.java).forEach { method ->
-            val containingClass = method.containingClass?.name
+            // Extract methods
+            @Suppress("UNCHECKED_CAST")
+            val methods = PsiTreeUtil.findChildrenOfType(psiFile, psiMethodClass as Class<PsiElement>)
+            methods.forEach { method ->
+                try {
+                    val name = method.javaClass.getMethod("getName").invoke(method) as String
+                    val containingClassMethod = method.javaClass.getMethod("getContainingClass")
+                    val containingClass = containingClassMethod.invoke(method)
+                    val containingClassName = if (containingClass != null) {
+                        containingClass.javaClass.getMethod("getName").invoke(containingClass) as? String
+                    } else {
+                        null
+                    }
 
-            symbols.add(
-                Symbol(
-                    name = method.name,
-                    kind = "method",
-                    lineNumber = getLineNumber(method),
-                    icon = AllIcons.Nodes.Method,
-                    containingClass = containingClass
-                )
-            )
+                    symbols.add(
+                        Symbol(
+                            name = name,
+                            kind = "method",
+                            lineNumber = getLineNumber(method),
+                            icon = AllIcons.Nodes.Method,
+                            containingClass = containingClassName
+                        )
+                    )
+                } catch (e: Exception) {
+                    log.debug("Error extracting method symbol: ${e.message}")
+                }
+            }
+        } catch (e: ClassNotFoundException) {
+            log.debug("Java plugin classes not available: ${e.message}")
+        } catch (e: Exception) {
+            log.debug("Error extracting symbols: ${e.message}")
         }
 
         return symbols.sortedBy { it.lineNumber }

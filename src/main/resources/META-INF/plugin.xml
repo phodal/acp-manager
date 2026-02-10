@@ -20,6 +20,8 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="java-support.xml">com.intellij.java</depends>
+    <depends optional="true" config-file="kotlin-support.xml">org.jetbrains.kotlin</depends>
 
     <resource-bundle>messages.AcpBundle</resource-bundle>
 
