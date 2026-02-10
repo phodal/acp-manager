@@ -81,6 +81,9 @@ dependencies {
     // YAML config
     implementation(libs.snakeyaml)
 
+    // Routa multi-agent coordination core
+    implementation(project(":routa-core"))
+
     testImplementation(libs.junit)
     testImplementation(libs.opentest4j)
     testImplementation(libs.kotlinx.coroutines.test)

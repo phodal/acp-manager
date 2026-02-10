@@ -3,3 +3,5 @@ plugins {
 }
 
 rootProject.name = "agent-dispatcher"
+
+include("routa-core")
