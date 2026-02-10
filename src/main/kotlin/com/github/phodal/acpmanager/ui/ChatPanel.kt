@@ -197,6 +197,12 @@ class ChatPanel(
 
         inputArea.text = ""
 
+        // Check if this is a slash command
+        if (text.startsWith("/")) {
+            handleSlashCommand(text)
+            return
+        }
+
         // Check for @ mentions and send at-mention notification if detected
         detectAndSendAtMention(text)
 
@@ -230,6 +236,31 @@ class ChatPanel(
                     inputToolbar.setStatusText("Error: ${e.message}")
                 }
             }
+        }
+    }
+
+    /**
+     * Handle slash command execution.
+     */
+    private fun handleSlashCommand(text: String) {
+        try {
+            // Extract command name (first word after /)
+            val parts = text.substring(1).split(Regex("\\s+"), limit = 2)
+            val commandName = parts.getOrNull(0) ?: return
+
+            val registry = com.github.phodal.acpmanager.ui.slash.SlashCommandRegistry.getInstance()
+            val command = registry.getCommand(commandName)
+
+            if (command != null) {
+                log.info("Executing slash command: /$commandName")
+                command.execute()
+            } else {
+                log.warn("Unknown slash command: /$commandName")
+                inputToolbar.setStatusText("Unknown command: /$commandName")
+            }
+        } catch (e: Exception) {
+            log.warn("Error executing slash command: ${e.message}", e)
+            inputToolbar.setStatusText("Error: ${e.message}")
         }
     }
 
