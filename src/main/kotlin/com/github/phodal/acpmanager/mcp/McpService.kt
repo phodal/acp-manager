@@ -145,6 +145,13 @@ class McpService(private val project: Project) : Disposable {
         }
     }
 
+    /**
+     * Check if the MCP server is currently running.
+     */
+    fun isRunning(): Boolean {
+        return ktorServer != null && mcpServer != null
+    }
+
     override fun dispose() {
         stop()
         scope.cancel()

@@ -90,8 +90,8 @@ class IdeToolsDiagnosticsTest : BasePlatformTestCase() {
         // Test ToolCallResult.ok() factory method
         val result = ToolCallResult.ok("Success message")
         assertFalse(result.isError)
-        assertEquals(1, result.content.size)
-        assertEquals("Success message", result.content[0])
+        assertNotNull(result.content)
+        assertEquals("Success message", result.content)
     }
 
     @Test
@@ -99,8 +99,8 @@ class IdeToolsDiagnosticsTest : BasePlatformTestCase() {
         // Test ToolCallResult.error() factory method
         val result = ToolCallResult.error("Error message")
         assertTrue(result.isError)
-        assertEquals(1, result.content.size)
-        assertEquals("Error message", result.content[0])
+        assertNotNull(result.errorMessage)
+        assertEquals("Error message", result.errorMessage)
     }
 
     @Test

@@ -30,29 +30,96 @@ class McpToolManager(
      * Register all IDE tools with the MCP server.
      */
     fun registerTools(server: Server) {
-        // File Tools
-        server.addTool(
-            name = "openFile",
-            description = "Opens the specified file in the IDE.",
-            inputSchema = ToolSchema(
-                properties = buildJsonObject {
-                    putJsonObject("filePath") {
-                        put("type", "string")
-                        put("description", "Absolute path to the file to open")
-                    }
-                    putJsonObject("makeFrontmost") {
-                        put("type", "boolean")
-                        put("description", "Whether to bring the file to front")
-                        put("default", true)
-                    }
-                },
-                required = listOf("filePath")
-            )
-        ) { request ->
-            handleToolCall("openFile", request.arguments ?: JsonObject(emptyMap()))
+        registerFileTool(server, "openFile", "Opens the specified file in the IDE.", listOf("filePath")) {
+            putJsonObject("filePath") {
+                put("type", "string")
+                put("description", "Absolute path to the file to open")
+            }
+            putJsonObject("makeFrontmost") {
+                put("type", "boolean")
+                put("description", "Whether to bring the file to front")
+                put("default", true)
+            }
         }
 
-        log.info("MCP tools registered: 1 tool (openFile)")
+        registerFileTool(server, "open_files", "Opens multiple files in the IDE.", listOf("file_paths")) {
+            putJsonObject("file_paths") {
+                put("type", "array")
+                putJsonObject("items") {
+                    put("type", "string")
+                }
+                put("description", "List of absolute file paths to open")
+            }
+        }
+
+        registerFileTool(server, "close_tab", "Closes a tab in the IDE by file path.", listOf("tab_name")) {
+            putJsonObject("tab_name") {
+                put("type", "string")
+                put("description", "File path or tab name to close")
+            }
+        }
+
+        registerFileTool(server, "get_open_files", "Gets a list of all currently open file paths.", emptyList()) {
+            // No parameters needed
+        }
+
+        registerFileTool(server, "reformat_file", "Reformats the specified file using IDE's formatter.", listOf("file_path")) {
+            putJsonObject("file_path") {
+                put("type", "string")
+                put("description", "Absolute path to the file to reformat")
+            }
+        }
+
+        registerFileTool(server, "open_diff", "Opens a diff view showing changes with accept/reject UI.", listOf("old_file_path", "new_file_contents")) {
+            putJsonObject("old_file_path") {
+                put("type", "string")
+                put("description", "Path to the original file")
+            }
+            putJsonObject("new_file_contents") {
+                put("type", "string")
+                put("description", "Proposed new file contents")
+            }
+            putJsonObject("tab_name") {
+                put("type", "string")
+                put("description", "Name for the diff tab")
+                put("default", "Diff")
+            }
+        }
+
+        registerFileTool(server, "get_diagnostics", "Gets diagnostic information (errors, warnings) for a file.", emptyList()) {
+            putJsonObject("uri") {
+                put("type", "string")
+                put("description", "File URI or path (optional, uses active file if omitted)")
+            }
+            putJsonObject("severity") {
+                put("type", "string")
+                put("description", "Filter by severity: ERROR, WARNING, INFO, or HINT (optional)")
+            }
+        }
+
+        log.info("MCP tools registered: 7 tools")
+    }
+
+    /**
+     * Helper to register a tool with the server.
+     */
+    private fun registerFileTool(
+        server: Server,
+        name: String,
+        description: String,
+        required: List<String>,
+        propertiesBuilder: JsonObjectBuilder.() -> Unit
+    ) {
+        server.addTool(
+            name = name,
+            description = description,
+            inputSchema = ToolSchema(
+                properties = buildJsonObject(propertiesBuilder),
+                required = required
+            )
+        ) { request ->
+            handleToolCall(name, request.arguments ?: JsonObject(emptyMap()))
+        }
     }
 
     /**
