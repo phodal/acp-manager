@@ -68,8 +68,14 @@ class SkillDiscovery(
                 allSkills[skill.name] = skill
             }
             
-            // Register all skills
-            allSkills.forEach { (name, skill) ->
+            // Unregister skills that no longer exist
+            val removedSkills = registeredSkills.keys - allSkills.keys
+            removedSkills.forEach { name ->
+                unregisterSkill(name)
+            }
+            
+            // Register all current skills
+            allSkills.forEach { (_, skill) ->
                 registerSkill(skill)
             }
             
@@ -122,37 +128,104 @@ class SkillDiscovery(
         try {
             val watchService = FileSystems.getDefault().newWatchService()
             
+            // Helper to register skill subdirectories for modification events
+            fun registerSkillSubdirectories(skillsRoot: Path) {
+                if (!Files.exists(skillsRoot) || !Files.isDirectory(skillsRoot)) {
+                    return
+                }
+                try {
+                    Files.list(skillsRoot).use { stream ->
+                        stream.filter { Files.isDirectory(it) }
+                            .forEach { subdir ->
+                                subdir.register(watchService, StandardWatchEventKinds.ENTRY_MODIFY)
+                                log.debug("Watching skill subdirectory: $subdir")
+                            }
+                    }
+                } catch (e: Exception) {
+                    log.warn("Failed to register subdirectories under $skillsRoot: ${e.message}", e)
+                }
+            }
+            
             // Watch personal skills directory
             val personalPath = Paths.get(System.getProperty("user.home"), ".claude", "skills")
-            if (Files.exists(personalPath)) {
-                personalPath.register(watchService, StandardWatchEventKinds.ENTRY_MODIFY)
+            if (Files.exists(personalPath) && Files.isDirectory(personalPath)) {
+                personalPath.register(
+                    watchService,
+                    StandardWatchEventKinds.ENTRY_CREATE,
+                    StandardWatchEventKinds.ENTRY_DELETE,
+                    StandardWatchEventKinds.ENTRY_MODIFY
+                )
                 log.debug("Watching personal skills directory: $personalPath")
+                registerSkillSubdirectories(personalPath)
             }
             
             // Watch project skills directory
             val projectPath = Paths.get(projectBasePath, ".claude", "skills")
-            if (Files.exists(projectPath)) {
-                projectPath.register(watchService, StandardWatchEventKinds.ENTRY_MODIFY)
+            if (Files.exists(projectPath) && Files.isDirectory(projectPath)) {
+                projectPath.register(
+                    watchService,
+                    StandardWatchEventKinds.ENTRY_CREATE,
+                    StandardWatchEventKinds.ENTRY_DELETE,
+                    StandardWatchEventKinds.ENTRY_MODIFY
+                )
                 log.debug("Watching project skills directory: $projectPath")
+                registerSkillSubdirectories(projectPath)
             }
             
             // Poll for changes
             while (scope.isActive) {
                 val key = watchService.poll(1, java.util.concurrent.TimeUnit.SECONDS) ?: continue
+                val watchedDir = key.watchable() as? Path
                 
                 for (event in key.pollEvents()) {
-                    @Suppress("UNCHECKED_CAST")
-                    val path = event.context() as? Path ?: continue
+                    val kind = event.kind()
                     
-                    if (event.kind() == StandardWatchEventKinds.ENTRY_MODIFY) {
-                        log.debug("Detected skill file change: $path")
-                        // Reload skills after a short delay to ensure file is written
-                        delay(500)
-                        discoverAndRegisterSkills()
+                    if (kind == StandardWatchEventKinds.OVERFLOW) {
+                        continue
+                    }
+                    
+                    @Suppress("UNCHECKED_CAST")
+                    val contextPath = (event as WatchEvent<Path>).context()
+                    val fullPath = if (watchedDir != null) watchedDir.resolve(contextPath) else contextPath
+                    
+                    when (kind) {
+                        StandardWatchEventKinds.ENTRY_CREATE -> {
+                            log.debug("Detected created path: $fullPath")
+                            // If a new skill directory is created, start watching it
+                            if (Files.exists(fullPath) && Files.isDirectory(fullPath)) {
+                                try {
+                                    fullPath.register(watchService, StandardWatchEventKinds.ENTRY_MODIFY)
+                                    log.debug("Watching newly created subdirectory: $fullPath")
+                                } catch (e: Exception) {
+                                    log.warn("Failed to watch $fullPath: ${e.message}", e)
+                                }
+                            }
+                            // Reload to pick up new skills
+                            delay(500)
+                            discoverAndRegisterSkills()
+                        }
+                        
+                        StandardWatchEventKinds.ENTRY_DELETE -> {
+                            log.debug("Detected deleted path: $fullPath")
+                            // Reload to remove deleted skills
+                            delay(500)
+                            discoverAndRegisterSkills()
+                        }
+                        
+                        StandardWatchEventKinds.ENTRY_MODIFY -> {
+                            log.debug("Detected modification: $fullPath")
+                            // Only reload when SKILL.md is modified
+                            if (fullPath.fileName.toString().equals("SKILL.md", ignoreCase = true)) {
+                                delay(500)
+                                discoverAndRegisterSkills()
+                            }
+                        }
                     }
                 }
                 
-                key.reset()
+                if (!key.reset()) {
+                    log.warn("Watch key no longer valid for: $watchedDir")
+                }
             }
             
             watchService.close()

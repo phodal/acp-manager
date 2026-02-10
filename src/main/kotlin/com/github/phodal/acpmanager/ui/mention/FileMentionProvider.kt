@@ -47,17 +47,31 @@ class FileMentionProvider(private val project: Project) : MentionProvider {
 
         // 2. Add files from FilenameIndex (project files)
         try {
-            val scope = GlobalSearchScope.projectScope(project)
-            val psiFiles = FilenameIndex.getFilesByName(project, query.ifEmpty { "*" }, scope)
-
-            for (psiFile in psiFiles) {
-                val virtualFile = psiFile.virtualFile
-                if (virtualFile != null) {
-                    val matchResult = FuzzyMatcher.match(virtualFile.name, query)
-                    if (matchResult.matched) {
-                        val item = createMentionItem(virtualFile)
-                        if (seen.add(item.insertText)) {
-                            mentions.add(item to matchResult.score)
+            com.intellij.openapi.application.ReadAction.compute<Unit, Exception> {
+                val scope = GlobalSearchScope.projectScope(project)
+                
+                // FilenameIndex requires read action and doesn't support wildcards
+                val allFileNames = if (query.isEmpty()) {
+                    FilenameIndex.getAllFilenames(project).toList()
+                } else {
+                    // Get files with exact name match first, then filter with fuzzy matching
+                    FilenameIndex.getAllFilenames(project).filter { 
+                        FuzzyMatcher.match(it, query).matched 
+                    }
+                }
+                
+                for (fileName in allFileNames.take(50)) {  // Limit to 50 files for performance
+                    val psiFiles = FilenameIndex.getFilesByName(project, fileName, scope)
+                    for (psiFile in psiFiles) {
+                        val virtualFile = psiFile.virtualFile
+                        if (virtualFile != null) {
+                            val matchResult = FuzzyMatcher.match(virtualFile.name, query)
+                            if (matchResult.matched) {
+                                val item = createMentionItem(virtualFile)
+                                if (seen.add(item.insertText)) {
+                                    mentions.add(item to matchResult.score)
+                                }
+                            }
                         }
                     }
                 }

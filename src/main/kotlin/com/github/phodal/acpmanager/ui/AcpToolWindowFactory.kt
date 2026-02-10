@@ -2,7 +2,6 @@ package com.github.phodal.acpmanager.ui
 
 import com.github.phodal.acpmanager.claudecode.registerClaudeCodeRenderer
 import com.github.phodal.acpmanager.ui.renderer.initializeDefaultRendererFactory
-import com.github.phodal.acpmanager.ui.slash.SlashCommandRegistry
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer

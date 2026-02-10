@@ -48,28 +48,15 @@ class MentionCompletionHandler(
 
     /**
      * Handle key press in the input area.
-     * Returns true if the event was consumed by the popup.
+     * Returns true if the event was consumed by the handler.
+     * 
+     * Note: The JBPopup handles its own navigation (Up/Down/Enter),
+     * so we only handle Escape to close the popup.
      */
     fun handleKeyPress(e: KeyEvent): Boolean {
         val popup = currentPopup ?: return false
 
         return when (e.keyCode) {
-            KeyEvent.VK_UP -> {
-                popup.selectPrevious()
-                true
-            }
-            KeyEvent.VK_DOWN -> {
-                popup.selectNext()
-                true
-            }
-            KeyEvent.VK_ENTER -> {
-                val selected = popup.getSelectedItem()
-                if (selected != null) {
-                    insertMention(selected)
-                    closePopup()
-                }
-                true
-            }
             KeyEvent.VK_ESCAPE -> {
                 closePopup()
                 true
@@ -120,10 +107,11 @@ class MentionCompletionHandler(
      * Show the mention popup.
      */
     private fun showPopup(items: List<MentionItem>, mentionStartPos: Int) {
-        this.mentionStartPos = mentionStartPos
-
         // Close existing popup
         closePopup()
+
+        // Set mention start position after closing to avoid reset
+        this.mentionStartPos = mentionStartPos
 
         // Create and show new popup
         val popup = MentionCompletionPopup(

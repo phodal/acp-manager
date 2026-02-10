@@ -9,7 +9,7 @@ private val log = logger<SlashCommandRegistry>()
  * Maintains a collection of available commands and provides lookup/filtering.
  */
 class SlashCommandRegistry {
-    private val commands = mutableMapOf<String, SlashCommand>()
+    private val commands = java.util.concurrent.ConcurrentHashMap<String, SlashCommand>()
 
     /**
      * Register a command.
@@ -92,16 +92,16 @@ class SlashCommandRegistry {
     }
 
     companion object {
+        @Volatile
         private var instance: SlashCommandRegistry? = null
 
         /**
-         * Get the singleton instance.
+         * Get the singleton instance (thread-safe).
          */
         fun getInstance(): SlashCommandRegistry {
-            if (instance == null) {
-                instance = SlashCommandRegistry()
+            return instance ?: synchronized(this) {
+                instance ?: SlashCommandRegistry().also { instance = it }
             }
-            return instance!!
         }
 
         /**

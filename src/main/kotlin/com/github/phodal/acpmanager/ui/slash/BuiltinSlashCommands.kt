@@ -58,10 +58,12 @@ class BuiltinSlashCommands(
             name = "help",
             description = "Show available commands",
             execute = {
-                val commands = getCommands()
+                // Get all commands from registry (includes built-in + skills)
+                val registry = com.github.phodal.acpmanager.ui.slash.SlashCommandRegistry.getInstance()
+                val allCommands = registry.getAllCommands().sortedBy { it.name }
                 val helpText = buildString {
                     appendLine("Available commands:")
-                    commands.forEach { cmd ->
+                    allCommands.forEach { cmd ->
                         appendLine("  /${cmd.name} - ${cmd.description}")
                     }
                 }
