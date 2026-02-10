@@ -357,12 +357,17 @@ class AcpManagerPanel(
                 // Get or create session
                 val session = sessionManager.getOrCreateSession(key)
 
-                // Create new chat panel
-                val chatPanel = ChatPanel(project, session)
+                // Determine agent type for renderer selection
+                val config = configService.loadConfig()
+                val agentConfig = config.agents[key]
+                val agentType = if (agentConfig?.isClaudeCode() == true) "claude-code" else "default"
+                log.info("AcpManagerPanel: Using agentType='$agentType' for '$key'")
+
+                // Create new chat panel with appropriate renderer
+                val chatPanel = ChatPanel(project, session, agentType)
                 chatPanels[key] = chatPanel
 
                 // Configure the input toolbar
-                val config = configService.loadConfig()
                 chatPanel.updateInputToolbar(
                     agents = config.agents,
                     currentAgentKey = key,

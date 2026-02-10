@@ -34,13 +34,13 @@ class MessagePanel(
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(20))
-            add(JBLabel(name).apply {
+            add(JBLabel(name ?: "Unknown").apply {
                 foreground = headerColor
-                font = font.deriveFont(Font.BOLD)
+                font = UIUtil.getLabelFont().deriveFont(Font.BOLD)
             }, BorderLayout.WEST)
             add(JBLabel(SimpleDateFormat("HH:mm:ss").format(Date(timestamp))).apply {
                 foreground = UIUtil.getLabelDisabledForeground()
-                font = font.deriveFont(font.size2D - 2)
+                font = UIUtil.getLabelFont().deriveFont(UIUtil.getLabelFont().size2D - 2)
             }, BorderLayout.EAST)
             alignmentX = Component.LEFT_ALIGNMENT
         }
