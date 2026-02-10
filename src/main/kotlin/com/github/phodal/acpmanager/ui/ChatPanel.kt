@@ -4,6 +4,7 @@ import com.github.phodal.acpmanager.acp.AgentSession
 import com.github.phodal.acpmanager.acp.AgentSessionState
 import com.github.phodal.acpmanager.config.AcpConfigService
 import com.github.phodal.acpmanager.ide.IdeAcpClient
+import com.github.phodal.acpmanager.ui.completion.CompletionManager
 import com.github.phodal.acpmanager.ui.renderer.AcpEventRenderer
 import com.github.phodal.acpmanager.ui.renderer.AcpEventRendererRegistry
 import com.github.phodal.acpmanager.ui.renderer.DefaultRendererFactory
@@ -43,6 +44,7 @@ class ChatPanel(
     private val scrollPane: JBScrollPane
     private val inputArea: JBTextArea
     private val inputToolbar: ChatInputToolbar
+    private lateinit var completionManager: CompletionManager
 
     // Event-driven renderer
     private val renderer: AcpEventRenderer
@@ -76,8 +78,16 @@ class ChatPanel(
             emptyText.text = "Type your message here... (Shift+Enter for newline, Enter to send)"
         }
 
+        // Initialize completion manager
+        completionManager = CompletionManager(project, inputArea)
+
         inputArea.addKeyListener(object : KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
+                // Try completion handlers first
+                if (completionManager.handleKeyPress(e)) {
+                    return
+                }
+
                 if (e.keyCode == KeyEvent.VK_ENTER && !e.isShiftDown) {
                     e.consume()
                     sendMessage()
@@ -181,6 +191,10 @@ class ChatPanel(
         if (text.isBlank()) return
 
         log.info("sendMessage called for agent '${session.agentKey}' with text length=${text.length}")
+
+        // Close any open completion popups
+        completionManager.closeAllPopups()
+
         inputArea.text = ""
 
         // Check for @ mentions and send at-mention notification if detected
