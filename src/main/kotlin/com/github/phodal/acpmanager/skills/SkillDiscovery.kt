@@ -30,11 +30,12 @@ class SkillDiscovery(
     private val registeredSkills = mutableMapOf<String, SkillDefinition>()
 
     init {
-        // Initial discovery on startup
-        discoverAndRegisterSkills()
-        
-        // Start file watcher for hot reload
-        watcherJob = scope.launch {
+        // Start file watcher and initial discovery in background (avoid blocking EDT)
+        watcherJob = scope.launch(Dispatchers.IO) {
+            // Initial discovery on startup - run on IO dispatcher
+            discoverAndRegisterSkills()
+            
+            // Start file watcher for hot reload
             watchSkillDirectories()
         }
     }

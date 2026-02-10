@@ -68,24 +68,43 @@ class AcpManagerPanel(
         setContent(tabbedPane)
         tabbedPane.addTab("Welcome", emptyPanel)
 
-        // Load config and auto-detect agents
-        configService.reloadConfig()
-
-        // Set initial selected agent
-        val config = configService.loadConfig()
-        selectedAgentKey = config.activeAgent ?: config.agents.keys.firstOrNull()
-
-        // Register built-in slash commands
+        // Register built-in slash commands (fast, no I/O)
         registerBuiltinCommands()
-
-        // Initialize skill discovery
-        initializeSkillDiscovery()
 
         // Watch session changes
         startSessionObserver()
 
         // Start periodic status refresh
         startStatusRefresh()
+
+        // Load config and discover skills in background to avoid blocking EDT
+        scope.launch(Dispatchers.IO) {
+            try {
+                // Load config and auto-detect agents (file I/O)
+                configService.reloadConfig()
+
+                // Set initial selected agent
+                val config = configService.loadConfig()
+                val agentKey = config.activeAgent ?: config.agents.keys.firstOrNull()
+
+                // Update UI on EDT
+                withContext(Dispatchers.Main) {
+                    selectedAgentKey = agentKey
+                    welcomeToolbar?.refreshAllStatuses()
+                }
+            } catch (e: Exception) {
+                log.warn("Failed to load config: ${e.message}", e)
+            }
+
+            // Initialize skill discovery (file I/O)
+            try {
+                withContext(Dispatchers.Main) {
+                    initializeSkillDiscovery()
+                }
+            } catch (e: Exception) {
+                log.warn("Failed to initialize skill discovery: ${e.message}", e)
+            }
+        }
     }
 
     /**
