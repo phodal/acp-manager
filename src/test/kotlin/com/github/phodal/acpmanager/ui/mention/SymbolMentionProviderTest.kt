@@ -119,6 +119,7 @@ class SymbolMentionProviderTest : BasePlatformTestCase() {
         // The actual symbol extraction depends on PSI parsing which may vary
         // This test verifies the infrastructure is in place
         assertNotNull("Should return a list", mentions)
+        @Suppress("USELESS_IS_CHECK")
         assertTrue("Should be a list", mentions is List<*>)
     }
 
@@ -137,6 +138,7 @@ class SymbolMentionProviderTest : BasePlatformTestCase() {
 
         // Verify the extraction method works and returns a list
         assertNotNull("Should return a list", mentions)
+        @Suppress("USELESS_IS_CHECK")
         assertTrue("Should be a list", mentions is List<*>)
     }
 
@@ -154,6 +156,7 @@ class SymbolMentionProviderTest : BasePlatformTestCase() {
 
         // Verify the extraction method works
         assertNotNull("Should return a list", mentions)
+        @Suppress("USELESS_IS_CHECK")
         assertTrue("Should be a list", mentions is List<*>)
     }
 
@@ -171,6 +174,7 @@ class SymbolMentionProviderTest : BasePlatformTestCase() {
 
         // Verify the extraction method works
         assertNotNull("Should return a list", mentions)
+        @Suppress("USELESS_IS_CHECK")
         assertTrue("Should be a list", mentions is List<*>)
     }
 
@@ -188,6 +192,7 @@ class SymbolMentionProviderTest : BasePlatformTestCase() {
 
         // Verify the extraction method works
         assertNotNull("Should return a list", mentions)
+        @Suppress("USELESS_IS_CHECK")
         assertTrue("Should be a list", mentions is List<*>)
     }
 }

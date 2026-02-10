@@ -36,7 +36,7 @@ class DefaultAgentDispatcher(
     private var executionJob: Job? = null
     private val taskJobs = mutableMapOf<String, Job>()
     /** Stores the output/result of each completed task for context passing. */
-    private val taskResults = mutableMapOf<String, String>()
+    private val taskResults = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     override suspend fun startPlanning(userInput: String) {
         val masterKey = _state.value.masterAgentKey
@@ -108,8 +108,15 @@ class DefaultAgentDispatcher(
         executionJob = scope.launch {
             try {
                 executeTasksWithDependencies(effectivePlan)
-                updateStatus(DispatcherStatus.COMPLETED)
-                emitLog(LogLevel.INF, "Master", message = "All tasks completed successfully.")
+                // Check if any tasks failed before marking as COMPLETED
+                val hasFailed = effectivePlan.tasks.any { it.status == AgentTaskStatus.FAILED }
+                if (hasFailed) {
+                    updateStatus(DispatcherStatus.FAILED)
+                    emitLog(LogLevel.ERR, "Master", message = "Some tasks failed.")
+                } else {
+                    updateStatus(DispatcherStatus.COMPLETED)
+                    emitLog(LogLevel.INF, "Master", message = "All tasks completed successfully.")
+                }
             } catch (e: CancellationException) {
                 updateStatus(DispatcherStatus.PAUSED)
                 emitLog(LogLevel.WRN, "Master", message = "Execution cancelled.")

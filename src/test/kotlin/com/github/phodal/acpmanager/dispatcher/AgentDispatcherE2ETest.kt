@@ -6,6 +6,7 @@ import com.github.phodal.acpmanager.dispatcher.terminal.TerminalPlanGenerator
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -45,6 +46,11 @@ class AgentDispatcherE2ETest {
         dispatcher.setMasterAgent("claude")
     }
 
+    @After
+    fun tearDown() {
+        scope.cancel()
+    }
+
     @Test
     fun `test single task plan generation and execution`() = runTest {
         // Set up a simple plan
@@ -75,8 +81,9 @@ class AgentDispatcherE2ETest {
         // Verify plan was generated
         val state = dispatcher.state.value
         assertNotNull(state.plan)
-        assertEquals(1, state.plan!!.tasks.size)
-        assertEquals("Implement feature", state.plan!!.tasks[0].title)
+        val plan = state.plan!!
+        assertEquals(1, plan.tasks.size)
+        assertEquals("Implement feature", plan.tasks[0].title)
 
         // Execute the plan
         dispatcher.executePlan()
@@ -84,7 +91,8 @@ class AgentDispatcherE2ETest {
         // Verify completion
         val finalState = dispatcher.state.value
         assertEquals(DispatcherStatus.COMPLETED, finalState.status)
-        assertEquals(AgentTaskStatus.DONE, finalState.plan!!.tasks[0].status)
+        val finalPlan = finalState.plan!!
+        assertEquals(AgentTaskStatus.DONE, finalPlan.tasks[0].status)
 
         // Verify logs were emitted
         assertTrue(executor.executionLogs.isNotEmpty())
@@ -136,9 +144,10 @@ class AgentDispatcherE2ETest {
         // Verify
         val finalState = dispatcher.state.value
         assertEquals(DispatcherStatus.COMPLETED, finalState.status)
-        assertEquals(3, finalState.plan!!.tasks.size)
+        val plan = finalState.plan!!
+        assertEquals(3, plan.tasks.size)
 
-        for (task in finalState.plan!!.tasks) {
+        for (task in plan.tasks) {
             assertEquals("Task ${task.id} should be DONE", AgentTaskStatus.DONE, task.status)
         }
     }
@@ -171,7 +180,8 @@ class AgentDispatcherE2ETest {
         dispatcher.executePlan()
 
         val finalState = dispatcher.state.value
-        assertEquals(AgentTaskStatus.FAILED, finalState.plan!!.tasks[0].status)
+        val finalPlan = finalState.plan!!
+        assertEquals(AgentTaskStatus.FAILED, finalPlan.tasks[0].status)
 
         // Verify error was logged
         assertTrue(finalState.logs.any { it.level == LogLevel.ERR && it.message.contains("Failed") })
@@ -293,7 +303,8 @@ class AgentDispatcherE2ETest {
         dispatcher.executePlan()
 
         val finalState = dispatcher.state.value
-        assertEquals(AgentTaskStatus.FAILED, finalState.plan!!.tasks[0].status)
+        val finalPlan = finalState.plan!!
+        assertEquals(AgentTaskStatus.FAILED, finalPlan.tasks[0].status)
         assertTrue(finalState.logs.any { it.message.contains("no assigned agent") })
     }
 
@@ -370,7 +381,8 @@ class AgentDispatcherE2ETest {
 
         // Verify task-1 result is stored
         val finalState = dispatcher.state.value
-        val task1 = finalState.plan!!.tasks.first { it.id == "task-1" }
+        val finalPlan = finalState.plan!!
+        val task1 = finalPlan.tasks.first { it.id == "task-1" }
         assertNotNull("task-1 should have a result", task1.result)
         assertTrue("task-1 result should contain output", task1.result!!.contains("Found 3 modules"))
     }
@@ -436,12 +448,13 @@ class AgentDispatcherE2ETest {
         assertEquals(DispatcherStatus.COMPLETED, finalState.status)
 
         // In SINGLE_AGENT mode, all tasks should use the master agent key ("claude")
-        for (task in finalState.plan!!.tasks) {
+        val finalPlan = finalState.plan!!
+        for (task in finalPlan.tasks) {
             assertEquals("claude", task.assignedAgent)
         }
 
         // Max parallelism should be forced to 1
-        assertEquals(1, finalState.plan!!.maxParallelism)
+        assertEquals(1, finalPlan.maxParallelism)
 
         // Verify single agent log
         assertTrue(finalState.logs.any { it.message.contains("Single-agent mode") })
