@@ -35,6 +35,17 @@ dependencies {
     // MCP SDK for tool exposure
     implementation(libs.mcp.sdk)
 
+    // ACP SDK for agent spawning (CRAFTER backend)
+    implementation(libs.acp.sdk) {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-json")
+    }
+    implementation(libs.acp.model) {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-json")
+    }
+    implementation(libs.kotlinx.io.core)
+
     // YAML config reading
     implementation(libs.kaml)
 

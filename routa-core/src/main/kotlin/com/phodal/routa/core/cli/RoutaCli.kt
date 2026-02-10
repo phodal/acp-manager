@@ -12,9 +12,9 @@ import kotlinx.coroutines.runBlocking
 /**
  * CLI entry point for the Routa multi-agent orchestrator.
  *
- * Reads LLM config from `~/.autodev/config.yaml`, then enters an interactive
- * loop where the user inputs requirements and Routa orchestrates agents to
- * implement them.
+ * Reads config from `~/.autodev/config.yaml`:
+ * - LLM config for ROUTA (planning) and GATE (verification)
+ * - ACP agent config for CRAFTER (real coding agents like Codex, Claude Code)
  *
  * Usage:
  * ```bash
@@ -25,16 +25,16 @@ fun main(args: Array<String>) {
     println("╔══════════════════════════════════════════════╗")
     println("║         Routa Multi-Agent Orchestrator       ║")
     println("╠══════════════════════════════════════════════╣")
-    println("║  ROUTA → plans tasks                        ║")
-    println("║  CRAFTER → implements each task             ║")
-    println("║  GATE → verifies all work                   ║")
+    println("║  ROUTA → plans tasks          (LLM/Koog)    ║")
+    println("║  CRAFTER → implements tasks   (ACP Agent)   ║")
+    println("║  GATE → verifies all work     (LLM/Koog)    ║")
     println("╚══════════════════════════════════════════════╝")
     println()
 
-    // Check config
+    // Check LLM config
     val configPath = RoutaConfigLoader.getConfigPath()
     if (!RoutaConfigLoader.hasConfig()) {
-        println("⚠  No valid config found at: $configPath")
+        println("⚠  No valid LLM config found at: $configPath")
         println()
         println("Please create ~/.autodev/config.yaml with:")
         println()
@@ -44,21 +44,37 @@ fun main(args: Array<String>) {
         println("      provider: deepseek")
         println("      apiKey: sk-...")
         println("      model: deepseek-chat")
-        println()
-        println("Supported providers: openai, anthropic, google, deepseek, ollama, openrouter")
+        println("  acpAgents:")
+        println("    codex:")
+        println("      command: codex")
+        println("      args: [\"--full-auto\"]")
+        println("  activeCrafter: codex")
         return
     }
 
     val activeConfig = RoutaConfigLoader.getActiveModelConfig()!!
-    println("✓ Config loaded from: $configPath")
-    println("  Provider: ${activeConfig.provider}")
-    println("  Model: ${activeConfig.model}")
+    println("✓ LLM config: ${activeConfig.provider} / ${activeConfig.model}")
+
+    // Check ACP agent config
+    val crafterInfo = RoutaConfigLoader.getActiveCrafterConfig()
+    if (crafterInfo != null) {
+        println("✓ CRAFTER backend: ACP agent '${crafterInfo.first}' (${crafterInfo.second.command})")
+    } else {
+        println("  CRAFTER backend: Koog LLM (no ACP agent configured)")
+        println("  Tip: add 'acpAgents' to config.yaml for real coding agents")
+    }
+    println()
+
+    // Resolve CWD
+    val cwd = if (args.isNotEmpty()) args[0] else System.getProperty("user.dir") ?: "."
+    println("  Working directory: $cwd")
     println()
 
     // Create system
     val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    val routa = RoutaFactory.createInMemory(scope)
-    val runner = KoogAgentRunner(routa.tools, "cli-workspace")
+
+    // Build the runner
+    val runner = buildRunner(scope, cwd)
 
     println("Enter your requirement (or 'quit' to exit):")
     println("─".repeat(50))
@@ -71,8 +87,9 @@ fun main(args: Array<String>) {
         }
         if (input.isEmpty()) continue
 
+        val routa = RoutaFactory.createInMemory(scope)
         val orchestrator = RoutaOrchestrator(
-            routa = RoutaFactory.createInMemory(scope),
+            routa = routa,
             runner = runner,
             workspaceId = "cli-${System.currentTimeMillis()}",
             onPhaseChange = { phase -> printPhase(phase) }
@@ -87,11 +104,36 @@ fun main(args: Array<String>) {
             println()
             println("✗ Error: ${e.message}")
             e.printStackTrace()
+        } finally {
+            routa.coordinator.shutdown()
         }
     }
 
-    routa.coordinator.shutdown()
     println("\nGoodbye!")
+}
+
+/**
+ * Build the appropriate runner based on config:
+ * - If ACP agent is configured → CompositeAgentRunner (Koog for ROUTA/GATE, ACP for CRAFTER)
+ * - Otherwise → KoogAgentRunner for all roles
+ */
+private fun buildRunner(scope: CoroutineScope, cwd: String): AgentRunner {
+    val routa = RoutaFactory.createInMemory(scope)
+    val koogRunner = KoogAgentRunner(routa.tools, "cli-workspace")
+
+    val crafterInfo = RoutaConfigLoader.getActiveCrafterConfig()
+    if (crafterInfo != null) {
+        val (agentKey, agentConfig) = crafterInfo
+        val acpRunner = AcpAgentRunner(
+            agentKey = agentKey,
+            config = agentConfig,
+            cwd = cwd,
+            onUpdate = { text -> print(text) },
+        )
+        return CompositeAgentRunner(koogRunner = koogRunner, acpRunner = acpRunner)
+    }
+
+    return koogRunner
 }
 
 private fun printPhase(phase: OrchestratorPhase) {

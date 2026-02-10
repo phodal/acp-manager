@@ -39,6 +39,35 @@ data class NamedModelConfig(
 )
 
 /**
+ * ACP agent configuration — defines an external agent that can be spawned as a child process.
+ *
+ * ```yaml
+ * acpAgents:
+ *   codex:
+ *     command: codex
+ *     args: ["--full-auto"]
+ *     env:
+ *       OPENAI_API_KEY: "sk-..."
+ *   claude:
+ *     command: claude
+ *     args: ["-p", "--output-format", "stream-json", "--input-format", "stream-json"]
+ * activeCrafter: codex
+ * ```
+ */
+@Serializable
+data class AcpAgentConfig(
+    val command: String = "",
+    val args: List<String> = emptyList(),
+    val env: Map<String, String> = emptyMap(),
+    val description: String = "",
+    val name: String = "",
+    val autoApprove: Boolean = false,
+) {
+    fun getCommandLine(): List<String> = mutableListOf(command).apply { addAll(args) }
+    fun isConfigured(): Boolean = command.isNotBlank()
+}
+
+/**
  * Root configuration file, compatible with `~/.autodev/config.yaml`.
  *
  * ```yaml
@@ -48,12 +77,19 @@ data class NamedModelConfig(
  *     provider: deepseek
  *     apiKey: sk-...
  *     model: deepseek-chat
+ * acpAgents:
+ *   codex:
+ *     command: codex
+ *     args: ["--full-auto"]
+ * activeCrafter: codex
  * ```
  */
 @Serializable
 data class RoutaConfigFile(
     val active: String = "",
     val configs: List<NamedModelConfig> = emptyList(),
+    val acpAgents: Map<String, AcpAgentConfig> = emptyMap(),
+    val activeCrafter: String? = null,
 )
 
 /**
@@ -88,12 +124,27 @@ object RoutaConfigLoader {
             return RoutaConfigFile()
         }
 
-        return try {
-            val content = configFile.readText()
-            yaml.decodeFromString(RoutaConfigFile.serializer(), content)
+        val content = configFile.readText()
+
+        // Try full parse first
+        try {
+            return yaml.decodeFromString(RoutaConfigFile.serializer(), content)
+        } catch (_: Exception) {
+            // Fall through to minimal parse
+        }
+
+        // Fallback: parse only LLM config (acpAgents format may differ from xiuper)
+        try {
+            @Serializable
+            data class MinimalConfig(
+                val active: String = "",
+                val configs: List<NamedModelConfig> = emptyList(),
+            )
+            val minimal = yaml.decodeFromString(MinimalConfig.serializer(), content)
+            return RoutaConfigFile(active = minimal.active, configs = minimal.configs)
         } catch (e: Exception) {
             System.err.println("Warning: Failed to parse ~/.autodev/config.yaml: ${e.message}")
-            RoutaConfigFile()
+            return RoutaConfigFile()
         }
     }
 
@@ -118,6 +169,31 @@ object RoutaConfigLoader {
             active.provider.equals("ollama", ignoreCase = true) -> active.model.isNotEmpty()
             else -> active.apiKey.isNotEmpty() && active.model.isNotEmpty()
         }
+    }
+
+    /**
+     * Get the active ACP agent config for CRAFTER.
+     */
+    fun getActiveCrafterConfig(): Pair<String, AcpAgentConfig>? {
+        val config = load()
+        val key = config.activeCrafter ?: return config.acpAgents.entries.firstOrNull()?.toPair()
+        val agentConfig = config.acpAgents[key] ?: return null
+        return key to agentConfig
+    }
+
+    /**
+     * Check if an ACP agent is configured for CRAFTER.
+     */
+    fun hasAcpCrafter(): Boolean {
+        val config = load()
+        return config.acpAgents.values.any { it.isConfigured() }
+    }
+
+    /**
+     * Get all configured ACP agents.
+     */
+    fun getAcpAgents(): Map<String, AcpAgentConfig> {
+        return load().acpAgents.filter { it.value.isConfigured() }
     }
 
     /**
