@@ -6,12 +6,13 @@ import kotlinx.serialization.Serializable
  * Result of an IDE tool call.
  */
 data class ToolCallResult(
-    val content: List<String>,
+    val content: String? = null,
     val isError: Boolean = false,
+    val errorMessage: String? = null,
 ) {
     companion object {
-        fun ok(vararg texts: String) = ToolCallResult(texts.toList())
-        fun error(message: String) = ToolCallResult(listOf(message), isError = true)
+        fun ok(vararg texts: String) = ToolCallResult(content = texts.joinToString("\n"))
+        fun error(message: String) = ToolCallResult(isError = true, errorMessage = message)
     }
 }
 
@@ -129,5 +130,5 @@ data class FileDiagnostics(
  */
 @Serializable
 data class OpenedFilesResults(
-    val file_paths: List<String>,
+    val opened_files: List<String>,
 )

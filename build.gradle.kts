@@ -48,6 +48,30 @@ dependencies {
         exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-core-jvm")
     }
 
+    // MCP SDK - exclude transitive dependencies that conflict with IntelliJ Platform
+    implementation(libs.mcp.sdk) {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-json")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-json-jvm")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-core-jvm")
+    }
+
+    // Ktor for WebSocket server
+    implementation(libs.ktor.server.core) {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
+    }
+    implementation(libs.ktor.server.websockets) {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
+    }
+    implementation(libs.ktor.server.cio) {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
+    }
+
     // Kotlin libraries (use platform-provided coroutines to avoid conflicts)
     compileOnly(libs.kotlinx.coroutines.core)
     compileOnly(libs.kotlinx.coroutines.swing)

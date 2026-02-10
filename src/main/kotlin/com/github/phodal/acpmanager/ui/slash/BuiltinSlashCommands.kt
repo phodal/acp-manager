@@ -130,13 +130,15 @@ class BuiltinSlashCommands(
                 if (!result.isError) {
                     val filesText = buildString {
                         appendLine("Open files:")
-                        result.content.forEach { filePath ->
-                            appendLine("  - $filePath")
+                        result.content?.lines()?.forEach { filePath ->
+                            if (filePath.isNotBlank()) {
+                                appendLine("  - $filePath")
+                            }
                         }
                     }
                     log.info(filesText)
                 } else {
-                    log.warn("Failed to get open files: ${result.content.joinToString()}")
+                    log.warn("Failed to get open files: ${result.errorMessage ?: "Unknown error"}")
                 }
             }
         )
