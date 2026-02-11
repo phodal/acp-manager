@@ -8,105 +8,85 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.phodal.routa.core.RoutaFactory
-import com.phodal.routa.core.RoutaSystem
 import com.phodal.routa.core.config.NamedModelConfig
 import com.phodal.routa.core.config.RoutaConfigLoader
-import com.phodal.routa.core.coordinator.CoordinationPhase
 import com.phodal.routa.core.coordinator.CoordinationState
 import com.phodal.routa.core.event.AgentEvent
 import com.phodal.routa.core.model.AgentRole
-import com.phodal.routa.core.model.AgentStatus
 import com.phodal.routa.core.provider.AgentProvider
 import com.phodal.routa.core.provider.CapabilityBasedRouter
 import com.phodal.routa.core.provider.KoogAgentProvider
 import com.phodal.routa.core.provider.ResilientAgentProvider
 import com.phodal.routa.core.provider.StreamChunk
-import com.phodal.routa.core.role.RouteDefinitions
 import com.phodal.routa.core.runner.OrchestratorPhase
 import com.phodal.routa.core.runner.OrchestratorResult
-import com.phodal.routa.core.runner.RoutaOrchestrator
+import com.phodal.routa.core.viewmodel.CrafterStreamState
+import com.phodal.routa.core.viewmodel.RoutaViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 private val log = logger<IdeaRoutaService>()
 
 /**
- * Data class representing a CRAFTER agent's streaming state for the UI.
- */
-data class CrafterStreamState(
-    val agentId: String,
-    val taskId: String,
-    val taskTitle: String = "",
-    val status: AgentStatus = AgentStatus.PENDING,
-    val chunks: List<StreamChunk> = emptyList(),
-    val outputText: String = "",
-)
-
-/**
- * Project-level service that bridges routa-core's multi-agent coordination
- * with the IDEA plugin infrastructure.
+ * Project-level service that bridges routa-core's [RoutaViewModel] with
+ * the IDEA plugin infrastructure.
  *
- * Provides observable state flows for the UI to bind to:
- * - [phase] — current orchestration phase
- * - [coordinationState] — full coordination state from RoutaCoordinator
- * - [routaChunks] — streaming chunks from the ROUTA agent
- * - [crafterChunks] — streaming chunks from CRAFTER agents (agentId, chunk)
- * - [crafterStates] — per-CRAFTER streaming state
- * - [gateChunks] — streaming chunks from the GATE agent
- * - [events] — all agent events for detailed logging
+ * **Responsibilities:**
+ * - Creates IntelliJ-specific providers ([IdeaAcpAgentProvider])
+ * - Manages ACP sessions and MCP server pre-connection
+ * - Delegates all orchestration state and logic to [RoutaViewModel]
+ *
+ * **Architecture:**
+ * ```
+ * DispatcherPanel → IdeaRoutaService → RoutaViewModel (routa-core)
+ *                        ↓
+ *                  IdeaAcpAgentProvider (IntelliJ-specific)
+ * ```
+ *
+ * The same [RoutaViewModel] is used by RoutaCli for headless/automated execution.
  */
 @Service(Service.Level.PROJECT)
 class IdeaRoutaService(private val project: Project) : Disposable {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    // ── Observable State ────────────────────────────────────────────────
+    // ── Core ViewModel (from routa-core) ────────────────────────────────
 
-    private val _phase = MutableStateFlow<OrchestratorPhase>(OrchestratorPhase.Initializing)
-    val phase: StateFlow<OrchestratorPhase> = _phase.asStateFlow()
+    /** The platform-agnostic ViewModel that holds all orchestration state and logic. */
+    val viewModel = RoutaViewModel(scope)
 
-    private val _routaChunks = MutableSharedFlow<StreamChunk>(extraBufferCapacity = 512)
-    val routaChunks: SharedFlow<StreamChunk> = _routaChunks.asSharedFlow()
+    // ── Delegated Observable State ──────────────────────────────────────
+    // These delegate to the ViewModel so existing UI code (DispatcherPanel)
+    // continues to work without changes.
 
-    private val _gateChunks = MutableSharedFlow<StreamChunk>(extraBufferCapacity = 512)
-    val gateChunks: SharedFlow<StreamChunk> = _gateChunks.asSharedFlow()
+    /** Current orchestration phase. */
+    val phase: StateFlow<OrchestratorPhase> get() = viewModel.phase
 
-    private val _crafterChunks = MutableSharedFlow<Pair<String, StreamChunk>>(extraBufferCapacity = 512)
-    val crafterChunks: SharedFlow<Pair<String, StreamChunk>> = _crafterChunks.asSharedFlow()
+    /** Streaming chunks from the ROUTA (planning) agent. */
+    val routaChunks: SharedFlow<StreamChunk> get() = viewModel.routaChunks
 
-    private val _crafterStates = MutableStateFlow<Map<String, CrafterStreamState>>(emptyMap())
-    val crafterStates: StateFlow<Map<String, CrafterStreamState>> = _crafterStates.asStateFlow()
+    /** Streaming chunks from the GATE (verification) agent. */
+    val gateChunks: SharedFlow<StreamChunk> get() = viewModel.gateChunks
 
-    private val _events = MutableSharedFlow<AgentEvent>(extraBufferCapacity = 256)
-    val events: SharedFlow<AgentEvent> = _events.asSharedFlow()
+    /** Streaming chunks from CRAFTER agents, keyed by agent ID. */
+    val crafterChunks: SharedFlow<Pair<String, StreamChunk>> get() = viewModel.crafterChunks
 
-    private val _isRunning = MutableStateFlow(false)
-    val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
+    /** Per-CRAFTER streaming state. */
+    val crafterStates: StateFlow<Map<String, CrafterStreamState>> get() = viewModel.crafterStates
 
-    private val _result = MutableStateFlow<OrchestratorResult?>(null)
-    val result: StateFlow<OrchestratorResult?> = _result.asStateFlow()
+    /** All agent events. */
+    val events: SharedFlow<AgentEvent> get() = viewModel.events
 
-    // ── Internal State ──────────────────────────────────────────────────
+    /** Whether an orchestration is currently running. */
+    val isRunning: StateFlow<Boolean> get() = viewModel.isRunning
 
-    private var routaSystem: RoutaSystem? = null
-    private var orchestrator: RoutaOrchestrator? = null
-    private var router: CapabilityBasedRouter? = null
-    private var acpProvider: IdeaAcpAgentProvider? = null
-    private var eventListenerJob: Job? = null
+    /** The result of the last orchestration. */
+    val result: StateFlow<OrchestratorResult?> get() = viewModel.result
 
-    /** Track agentId → role for routing stream chunks */
-    private val agentRoleMap = mutableMapOf<String, AgentRole>()
+    /** Coordination state from the underlying RoutaCoordinator. */
+    val coordinationState: StateFlow<CoordinationState> get() = viewModel.coordinationState
 
-    /** Track crafterId → taskId mapping */
-    private val crafterTaskMap = mutableMapOf<String, String>()
-
-    /** Track crafterId → task title (cached from handlePhaseChange where suspend context is available) */
-    private val crafterTitleMap = mutableMapOf<String, String>()
-
-    /** Lock for thread-safe updates to _crafterStates */
-    private val crafterStateLock = Any()
-
-    // ── Model Configuration ─────────────────────────────────────────────
+    // ── IDE-Specific Configuration ──────────────────────────────────────
 
     val crafterModelKey = MutableStateFlow("")
     val routaModelKey = MutableStateFlow("")
@@ -123,6 +103,13 @@ class IdeaRoutaService(private val project: Project) : Disposable {
     private val _mcpServerUrl = MutableStateFlow<String?>(null)
     /** The MCP server SSE URL exposed to Claude Code, if running. */
     val mcpServerUrl: StateFlow<String?> = _mcpServerUrl.asStateFlow()
+
+    // ── IDE-Specific Internal State ─────────────────────────────────────
+
+    private var router: CapabilityBasedRouter? = null
+    private var acpProvider: IdeaAcpAgentProvider? = null
+
+    // ── Public API (LLM Config) ─────────────────────────────────────────
 
     /**
      * Get available LLM model configs from ~/.autodev/config.yaml.
@@ -150,39 +137,39 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         _llmModelConfig.value = config
     }
 
-    // ── Public API ──────────────────────────────────────────────────────
+    // ── Public API (Orchestration) ──────────────────────────────────────
 
     /**
      * Check if the service has been initialized.
      */
-    fun isInitialized(): Boolean = orchestrator != null
+    fun isInitialized(): Boolean = viewModel.isInitialized()
 
     /**
      * Stop all running agents and cancel the current execution.
      */
     fun stopExecution() {
-        if (!_isRunning.value) return
+        if (!isRunning.value) return
 
         log.info("Stopping execution...")
 
         scope.launch {
             try {
-                // Interrupt all active CRAFTER agents
-                val activeAgents = _crafterStates.value.filter { it.value.status == AgentStatus.ACTIVE }
+                // Interrupt all active CRAFTER agents via the IDE-specific provider
+                val activeAgents = crafterStates.value.filter { it.value.status == com.phodal.routa.core.model.AgentStatus.ACTIVE }
                 for ((agentId, _) in activeAgents) {
                     try {
                         acpProvider?.interrupt(agentId)
-                        updateCrafterState(agentId) { current ->
-                            current.copy(status = AgentStatus.CANCELLED)
-                        }
                         log.info("Interrupted agent $agentId")
                     } catch (e: Exception) {
                         log.warn("Failed to interrupt agent $agentId: ${e.message}")
                     }
                 }
 
-                // Reset the orchestrator state
-                reset()
+                // Reset via ViewModel
+                viewModel.reset()
+                // Reset IDE-specific state
+                _mcpServerUrl.value = null
+                disconnectMcpSession()
             } catch (e: Exception) {
                 log.warn("Error during stop: ${e.message}", e)
             }
@@ -194,25 +181,8 @@ class IdeaRoutaService(private val project: Project) : Disposable {
      */
     fun stopCrafter(agentId: String) {
         log.info("Stopping CRAFTER agent $agentId...")
-
-        scope.launch {
-            try {
-                acpProvider?.interrupt(agentId)
-                updateCrafterState(agentId) { current ->
-                    current.copy(status = AgentStatus.CANCELLED)
-                }
-                log.info("Stopped CRAFTER agent $agentId")
-            } catch (e: Exception) {
-                log.warn("Failed to stop CRAFTER agent $agentId: ${e.message}", e)
-            }
-        }
+        viewModel.stopCrafter(agentId)
     }
-
-    /**
-     * Get the coordination state from the underlying RoutaCoordinator.
-     */
-    val coordinationState: StateFlow<CoordinationState>
-        get() = routaSystem?.coordinator?.coordinationState ?: MutableStateFlow(CoordinationState())
 
     /**
      * Initialize the Routa system with the specified agent keys.
@@ -220,13 +190,9 @@ class IdeaRoutaService(private val project: Project) : Disposable {
      * Uses [CapabilityBasedRouter] to route:
      * - ROUTA (planning) → [KoogAgentProvider] (LLM with tool calling)
      * - CRAFTER (implementation) → [IdeaAcpAgentProvider] (ACP agents like Codex, Claude Code)
-     * - GATE (verification) → [KoogAgentProvider] or [IdeaAcpAgentProvider] (auto-selected by capabilities)
+     * - GATE (verification) → [KoogAgentProvider] or [IdeaAcpAgentProvider]
      *
-     * This matches the architecture used in [RoutaCli].
-     *
-     * When [useAcpForRouta] is true (default), ROUTA planning is done via ACP Agent
-     * with the system prompt from [RouteDefinitions.ROUTA] prepended to user requests.
-     * This allows the ACP agent to analyze the project and generate tasks.
+     * This matches the architecture used in RoutaCli, using the shared [RoutaViewModel].
      *
      * @param crafterAgent ACP agent key for CRAFTERs
      * @param routaAgent ACP agent key for ROUTA
@@ -244,16 +210,15 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         routaModelKey.value = routaAgent
         gateModelKey.value = gateAgent
 
-        val system = RoutaFactory.createInMemory(scope)
-        routaSystem = system
-
         val workspaceId = project.basePath ?: "default-workspace"
+
+        // Create a shared RoutaSystem for both provider and orchestrator
+        val system = RoutaFactory.createInMemory(scope)
 
         // Build capability-based router (like RoutaCli.buildProvider)
         val providers = mutableListOf<AgentProvider>()
 
-        // When useAcpForRouta is false, add KoogAgentProvider for ROUTA (LLM with tool calling)
-        // When useAcpForRouta is true, skip Koog and let ACP handle ROUTA too
+        // When useAcpForRouta is false, add KoogAgentProvider for ROUTA
         if (!_useAcpForRouta.value) {
             val modelConfig = _llmModelConfig.value ?: RoutaConfigLoader.getActiveModelConfig()
             if (modelConfig != null) {
@@ -286,21 +251,9 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         val capRouter = CapabilityBasedRouter(*providers.toTypedArray())
         router = capRouter
 
-        orchestrator = RoutaOrchestrator(
-            routa = system,
-            runner = capRouter,
-            workspaceId = workspaceId,
-            onPhaseChange = { phase -> handlePhaseChange(phase) },
-            onStreamChunk = { agentId, chunk -> handleStreamChunk(agentId, chunk) },
-        )
-
-        // Listen to events from the event bus
-        eventListenerJob = scope.launch {
-            system.eventBus.events.collect { event ->
-                handleEvent(event)
-                _events.tryEmit(event)
-            }
-        }
+        // Configure and initialize the ViewModel
+        viewModel.useEnhancedRoutaPrompt = _useAcpForRouta.value
+        viewModel.initialize(capRouter, workspaceId, system)
 
         // Log provider routing info
         val routerInfo = capRouter.listProviders().joinToString(", ") { "${it.name}[p=${it.priority}]" }
@@ -308,6 +261,37 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         log.info("IdeaRoutaService initialized: crafter=$crafterAgent, routa=$routaMode, providers=[$routerInfo]")
 
         // Pre-connect a crafter session to start MCP server for coordination tools
+        preConnectMcpSession(crafterAgent)
+    }
+
+    /**
+     * Execute a user request through the full Routa → CRAFTER → GATE pipeline.
+     * Delegates to [RoutaViewModel.execute].
+     */
+    suspend fun execute(userRequest: String): OrchestratorResult {
+        return viewModel.execute(userRequest)
+    }
+
+    /**
+     * Reset the service, cleaning up all resources.
+     */
+    fun reset() {
+        viewModel.reset()
+        _mcpServerUrl.value = null
+
+        // Clean up IDE-specific resources
+        disconnectMcpSession()
+
+        scope.launch {
+            router?.shutdown()
+            router = null
+            acpProvider = null
+        }
+    }
+
+    // ── IDE-Specific: MCP Session Management ────────────────────────────
+
+    private fun preConnectMcpSession(crafterAgent: String) {
         scope.launch {
             try {
                 val configService = AcpConfigService.getInstance(project)
@@ -319,9 +303,8 @@ class IdeaRoutaService(private val project: Project) : Disposable {
                     val session = sessionManager.getOrCreateSession(sessionKey)
                     if (!session.isConnected) {
                         session.connect(crafterConfig)
-                        // Wait a bit for the MCP server to start
+                        // Wait for MCP server to start
                         delay(500)
-                        // Refresh MCP URL immediately
                         _mcpServerUrl.value = session.mcpServerUrl
                         if (session.mcpServerUrl != null) {
                             log.info("MCP server started at: ${session.mcpServerUrl}")
@@ -336,82 +319,7 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         }
     }
 
-    /**
-     * Execute a user request through the full Routa → CRAFTER → GATE pipeline.
-     */
-    suspend fun execute(userRequest: String): OrchestratorResult {
-        val orch = orchestrator
-            ?: throw IllegalStateException("Service not initialized. Call initialize() first.")
-
-        _isRunning.value = true
-        _result.value = null
-        _crafterStates.value = emptyMap()
-        agentRoleMap.clear()
-        crafterTaskMap.clear()
-        crafterTitleMap.clear()
-
-        // When using ACP for ROUTA, prepend the system prompt from RouteDefinitions
-        // This provides the ROUTA role context that would normally be injected by KoogAgent
-        val enhancedRequest = if (_useAcpForRouta.value) {
-            buildRoutaEnhancedPrompt(userRequest)
-        } else {
-            userRequest
-        }
-
-        return try {
-            val result = orch.execute(enhancedRequest)
-            _result.value = result
-            result
-        } catch (e: Exception) {
-            log.warn("Orchestration failed: ${e.message}", e)
-            val failedResult = OrchestratorResult.Failed(e.message ?: "Unknown error")
-            _result.value = failedResult
-            failedResult
-        } finally {
-            _isRunning.value = false
-        }
-    }
-
-    /**
-     * Build an enhanced prompt for ROUTA when using ACP Agent.
-     *
-     * Prepends the ROUTA system prompt from [RouteDefinitions.ROUTA] to the user request,
-     * so the ACP agent has the same context that KoogAgent would inject as system prompt.
-     */
-    private fun buildRoutaEnhancedPrompt(userRequest: String): String {
-        val routaSystemPrompt = RouteDefinitions.ROUTA.systemPrompt
-        val routaRoleReminder = RouteDefinitions.ROUTA.roleReminder
-
-        return buildString {
-            appendLine("# ROUTA Coordinator Instructions")
-            appendLine()
-            appendLine(routaSystemPrompt)
-            appendLine()
-            appendLine("---")
-            appendLine()
-            appendLine("**Role Reminder:** $routaRoleReminder")
-            appendLine()
-            appendLine("---")
-            appendLine()
-            appendLine("# User Request")
-            appendLine()
-            appendLine(userRequest)
-        }
-    }
-
-    /**
-     * Reset the service, cleaning up all resources.
-     */
-    fun reset() {
-        eventListenerJob?.cancel()
-        eventListenerJob = null
-
-        routaSystem?.coordinator?.reset()
-        routaSystem = null
-        orchestrator = null
-        _mcpServerUrl.value = null
-
-        // Disconnect pre-connected MCP session
+    private fun disconnectMcpSession() {
         scope.launch {
             try {
                 val sessionManager = AcpSessionManager.getInstance(project)
@@ -420,186 +328,11 @@ class IdeaRoutaService(private val project: Project) : Disposable {
                 log.debug("Failed to disconnect MCP session: ${e.message}")
             }
         }
-
-        scope.launch {
-            router?.shutdown()
-            router = null
-            acpProvider = null
-        }
-
-        _phase.value = OrchestratorPhase.Initializing
-        _crafterStates.value = emptyMap()
-        _isRunning.value = false
-        _result.value = null
-        agentRoleMap.clear()
-        crafterTaskMap.clear()
-        crafterTitleMap.clear()
-    }
-
-    // ── Event Handlers ──────────────────────────────────────────────────
-
-    private suspend fun handlePhaseChange(phase: OrchestratorPhase) {
-        log.info("Phase changed: $phase")
-        _phase.value = phase
-
-        // Track crafter start/completion for UI
-        when (phase) {
-            is OrchestratorPhase.CrafterRunning -> {
-                agentRoleMap[phase.crafterId] = AgentRole.CRAFTER
-                crafterTaskMap[phase.crafterId] = phase.taskId
-
-                // Get task title from the store with fallback logic
-                val task = routaSystem?.context?.taskStore?.get(phase.taskId)
-                val title = when {
-                    task?.title?.isNotBlank() == true -> task.title
-                    // Try to get from coordination state's task list
-                    else -> {
-                        val allTasks = routaSystem?.context?.taskStore?.listByWorkspace(
-                            routaSystem?.coordinator?.coordinationState?.value?.workspaceId ?: ""
-                        )
-                        val matchingTask = allTasks?.find { it.id == phase.taskId }
-                        matchingTask?.title?.takeIf { it.isNotBlank() }
-                            ?: "Task ${phase.taskId.take(8)}..."
-                    }
-                }
-
-                log.info("CrafterRunning: crafterId=${phase.crafterId.take(8)}, taskId=${phase.taskId.take(8)}, " +
-                    "title='$title', taskFromStore=${task != null}")
-
-                // Cache the title so updateCrafterState can use it as fallback
-                crafterTitleMap[phase.crafterId] = title
-
-                updateCrafterState(phase.crafterId) {
-                    CrafterStreamState(
-                        agentId = phase.crafterId,
-                        taskId = phase.taskId,
-                        taskTitle = title,
-                        status = AgentStatus.ACTIVE,
-                    )
-                }
-            }
-
-            is OrchestratorPhase.CrafterCompleted -> {
-                updateCrafterState(phase.crafterId) { current ->
-                    current.copy(status = AgentStatus.COMPLETED)
-                }
-            }
-
-            is OrchestratorPhase.VerificationStarting -> {
-                // The next agent that streams will be the GATE
-            }
-
-            else -> {}
-        }
-    }
-
-    private fun handleStreamChunk(agentId: String, chunk: StreamChunk) {
-        // Try to get role from cache
-        // If not found, check if this is the ROUTA agent from coordination state
-        val role = agentRoleMap[agentId] ?: run {
-            val state = routaSystem?.coordinator?.coordinationState?.value
-            when {
-                state?.routaAgentId == agentId -> {
-                    agentRoleMap[agentId] = AgentRole.ROUTA
-                    AgentRole.ROUTA
-                }
-                else -> null
-            }
-        }
-
-        when (role) {
-            AgentRole.ROUTA -> _routaChunks.tryEmit(chunk)
-            AgentRole.GATE -> _gateChunks.tryEmit(chunk)
-            AgentRole.CRAFTER -> {
-                // Emit chunk for real-time UI updates
-                _crafterChunks.tryEmit(agentId to chunk)
-
-                // Also update accumulated state
-                updateCrafterState(agentId) { current ->
-                    val newOutput = when (chunk) {
-                        is StreamChunk.Text -> current.outputText + chunk.content
-                        is StreamChunk.ToolCall -> current.outputText + "\n[${chunk.status}] ${chunk.name}"
-                        is StreamChunk.Error -> current.outputText + "\n[ERROR] ${chunk.message}"
-                        else -> current.outputText
-                    }
-                    current.copy(
-                        chunks = current.chunks + chunk,
-                        outputText = newOutput,
-                    )
-                }
-            }
-
-            null -> {
-                // Unknown agent — log and skip
-                log.debug("Stream chunk for unknown agent $agentId, skipping routing")
-            }
-        }
-    }
-
-    private suspend fun handleEvent(event: AgentEvent) {
-        when (event) {
-            is AgentEvent.AgentCreated -> {
-                // Look up the agent to determine its role
-                val agent = routaSystem?.context?.agentStore?.get(event.agentId)
-                if (agent != null) {
-                    agentRoleMap[agent.id] = agent.role
-                }
-            }
-
-            is AgentEvent.AgentStatusChanged -> {
-                if (event.newStatus == AgentStatus.ERROR) {
-                    val role = agentRoleMap[event.agentId]
-                    if (role == AgentRole.CRAFTER) {
-                        updateCrafterState(event.agentId) { current ->
-                            current.copy(status = AgentStatus.ERROR)
-                        }
-                    }
-                }
-            }
-
-            is AgentEvent.TaskDelegated -> {
-                agentRoleMap[event.agentId] = AgentRole.CRAFTER
-                crafterTaskMap[event.agentId] = event.taskId
-            }
-
-            is AgentEvent.AgentCompleted -> {
-                // Convert completion report to StreamChunk and emit to UI
-                val role = agentRoleMap[event.agentId]
-                if (role == AgentRole.CRAFTER) {
-                    val report = event.report
-                    val completionChunk = StreamChunk.CompletionReport(
-                        agentId = event.agentId,
-                        taskId = report.taskId,
-                        summary = report.summary,
-                        filesModified = report.filesModified,
-                        success = report.success,
-                    )
-                    _crafterChunks.tryEmit(event.agentId to completionChunk)
-
-                    log.info("AgentCompleted: agentId=${event.agentId.take(8)}, " +
-                        "taskId=${report.taskId.take(8)}, success=${report.success}")
-                }
-            }
-
-            else -> {}
-        }
-    }
-
-    private fun updateCrafterState(agentId: String, updater: (CrafterStreamState) -> CrafterStreamState) {
-        synchronized(crafterStateLock) {
-            val current = _crafterStates.value.toMutableMap()
-            val existing = current[agentId] ?: CrafterStreamState(
-                agentId = agentId,
-                taskId = crafterTaskMap[agentId] ?: "",
-                taskTitle = crafterTitleMap[agentId] ?: "",
-            )
-            current[agentId] = updater(existing)
-            _crafterStates.value = current
-        }
     }
 
     override fun dispose() {
         reset()
+        viewModel.dispose()
         scope.cancel()
     }
 

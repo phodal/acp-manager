@@ -8,13 +8,14 @@ import com.phodal.routa.core.provider.CapabilityBasedRouter
 import com.phodal.routa.core.provider.StreamChunk
 import com.phodal.routa.core.provider.ThinkingPhase
 import com.phodal.routa.core.runner.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.runBlocking
+import com.phodal.routa.core.viewmodel.RoutaViewModel
+import kotlinx.coroutines.*
 
 /**
  * CLI entry point for the Routa multi-agent orchestrator.
+ *
+ * Uses the shared [RoutaViewModel] for orchestration state management,
+ * the same ViewModel used by the IntelliJ plugin's DispatcherPanel.
  *
  * Reads config from `~/.autodev/config.yaml`:
  * - LLM config for ROUTA (planning) and GATE (verification)
@@ -99,6 +100,9 @@ fun main(args: Array<String>) {
     // Print provider routing info
     printProviderInfo(provider)
 
+    // Create the shared ViewModel
+    val viewModel = RoutaViewModel(scope)
+
     println()
     println("Enter your requirement (or 'quit' to exit):")
     println("─".repeat(50))
@@ -111,39 +115,57 @@ fun main(args: Array<String>) {
         }
         if (input.isEmpty()) continue
 
-        val routa = RoutaFactory.createInMemory(scope)
         val workspaceId = "cli-${System.currentTimeMillis()}"
 
-        val orchestrator = RoutaOrchestrator(
-            routa = routa,
-            runner = provider,
-            workspaceId = workspaceId,
-            onPhaseChange = { phase -> printPhase(phase) },
-            onStreamChunk = { agentId, chunk -> printStreamChunk(agentId, chunk) },
-        )
+        // Initialize the ViewModel for this session
+        // Don't use enhanced prompt — the orchestrator handles prompt building
+        viewModel.useEnhancedRoutaPrompt = false
+        viewModel.initialize(provider, workspaceId)
+
+        // Collect streams in parallel for real-time CLI output
+        val phaseJob = scope.launch {
+            viewModel.phase.collect { printPhase(it) }
+        }
+        val routaChunkJob = scope.launch {
+            viewModel.routaChunks.collect { chunk -> printStreamChunk("routa", chunk) }
+        }
+        val crafterChunkJob = scope.launch {
+            viewModel.crafterChunks.collect { (agentId, chunk) -> printStreamChunk(agentId, chunk) }
+        }
+        val gateChunkJob = scope.launch {
+            viewModel.gateChunks.collect { chunk -> printStreamChunk("gate", chunk) }
+        }
 
         try {
             val result = runBlocking {
-                orchestrator.execute(input)
+                viewModel.execute(input)
             }
             printResult(result)
 
             // Print event replay summary
-            val eventLog = runBlocking { routa.eventBus.getTimestampedLog() }
-            if (eventLog.isNotEmpty()) {
-                println()
-                println("📊 Event log: ${eventLog.size} critical events recorded")
+            val system = viewModel.system
+            if (system != null) {
+                val eventLog = runBlocking { system.eventBus.getTimestampedLog() }
+                if (eventLog.isNotEmpty()) {
+                    println()
+                    println("📊 Event log: ${eventLog.size} critical events recorded")
+                }
             }
         } catch (e: Exception) {
             println()
             println("✗ Error: ${e.message}")
             e.printStackTrace()
         } finally {
-            routa.coordinator.shutdown()
+            phaseJob.cancel()
+            routaChunkJob.cancel()
+            crafterChunkJob.cancel()
+            gateChunkJob.cancel()
+            viewModel.reset()
         }
     }
 
-    // Shutdown provider resources
+    // Shutdown
+    viewModel.dispose()
     runBlocking { provider.shutdown() }
     println("\nGoodbye!")
 }
@@ -205,7 +227,6 @@ private fun printStreamChunk(agentId: String, chunk: StreamChunk) {
     when (chunk) {
         is StreamChunk.Text -> print(chunk.content)
         is StreamChunk.Thinking -> {
-            // Print thinking content with subtle styling
             when (chunk.phase) {
                 ThinkingPhase.START -> print("\n    💭 ")
                 ThinkingPhase.CHUNK -> print(chunk.content)

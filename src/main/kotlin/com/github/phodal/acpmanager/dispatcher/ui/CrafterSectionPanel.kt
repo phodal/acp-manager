@@ -1,7 +1,7 @@
 package com.github.phodal.acpmanager.dispatcher.ui
 
 import com.github.phodal.acpmanager.claudecode.CrafterRenderer
-import com.github.phodal.acpmanager.dispatcher.routa.CrafterStreamState
+import com.phodal.routa.core.viewmodel.CrafterStreamState
 import com.github.phodal.acpmanager.ui.renderer.AcpEventRenderer
 import com.github.phodal.acpmanager.ui.renderer.RenderEvent
 import com.intellij.icons.AllIcons
