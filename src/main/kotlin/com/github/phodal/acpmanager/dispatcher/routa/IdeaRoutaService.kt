@@ -1,6 +1,7 @@
 package com.github.phodal.acpmanager.dispatcher.routa
 
 import com.github.phodal.acpmanager.acp.AcpSessionManager
+import com.github.phodal.acpmanager.config.AcpConfigService
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
@@ -160,6 +161,30 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         }
 
         log.info("IdeaRoutaService initialized: crafter=$crafterAgent, routa=$routaAgent, gate=$gateAgent")
+
+        // Pre-connect the crafter session to start MCP server if using Claude Code
+        scope.launch {
+            try {
+                val configService = AcpConfigService.getInstance(project)
+                val crafterConfig = configService.getAgentConfig(crafterAgent)
+                if (crafterConfig?.isClaudeCode() == true) {
+                    log.info("Pre-connecting Claude Code session to start MCP server...")
+                    val sessionManager = AcpSessionManager.getInstance(project)
+                    val sessionKey = "routa-mcp-crafter"
+                    val session = sessionManager.getOrCreateSession(sessionKey)
+                    if (!session.isConnected) {
+                        session.connect(crafterConfig)
+                        // Wait a bit for the MCP server to start
+                        delay(500)
+                        // Refresh MCP URL immediately
+                        _mcpServerUrl.value = session.mcpServerUrl
+                        log.info("MCP server started at: ${session.mcpServerUrl}")
+                    }
+                }
+            } catch (e: Exception) {
+                log.warn("Failed to pre-connect Claude Code session: ${e.message}", e)
+            }
+        }
     }
 
     /**
@@ -201,6 +226,16 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         orchestrator = null
         _mcpServerUrl.value = null
 
+        // Disconnect pre-connected MCP session
+        scope.launch {
+            try {
+                val sessionManager = AcpSessionManager.getInstance(project)
+                sessionManager.disconnectAgent("routa-mcp-crafter")
+            } catch (e: Exception) {
+                log.debug("Failed to disconnect MCP session: ${e.message}")
+            }
+        }
+
         scope.launch {
             provider?.shutdown()
             provider = null
@@ -238,9 +273,6 @@ class IdeaRoutaService(private val project: Project) : Disposable {
                         status = AgentStatus.ACTIVE,
                     )
                 }
-
-                // Expose MCP server URL if running
-                refreshMcpServerUrl()
             }
 
             is OrchestratorPhase.CrafterCompleted -> {
@@ -324,17 +356,6 @@ class IdeaRoutaService(private val project: Project) : Disposable {
 
             else -> {}
         }
-    }
-
-    private fun refreshMcpServerUrl() {
-        val sessionManager = AcpSessionManager.getInstance(project)
-        // Find any active session with a running MCP server
-        // Session keys follow the "routa-{agentId.take(8)}" pattern from IdeaAcpAgentProvider
-        val url = crafterTaskMap.keys.firstNotNullOfOrNull { agentId ->
-            val sessionKey = "routa-${agentId.take(8)}"
-            sessionManager.getSession(sessionKey)?.mcpServerUrl
-        }
-        _mcpServerUrl.value = url
     }
 
     private fun updateCrafterState(agentId: String, updater: (CrafterStreamState) -> CrafterStreamState) {
