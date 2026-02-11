@@ -16,7 +16,10 @@ import com.phodal.routa.core.provider.ToolCallStatus
  *
  * Extracted from the former `CrafterDetailPanel.appendChunk()`.
  */
-class StreamChunkAdapter(private val renderer: AcpEventRenderer) {
+class StreamChunkAdapter(
+    private val renderer: AcpEventRenderer,
+    private val agentId: String = "unknown"
+) {
 
     // State tracking for StreamChunk → RenderEvent conversion
     private var messageStarted = false
@@ -31,6 +34,9 @@ class StreamChunkAdapter(private val renderer: AcpEventRenderer) {
      * @return An optional completion callback (currently used for status updates).
      */
     fun appendChunk(chunk: StreamChunk) {
+        // Log for debugging
+        EventLogger.logStreamChunk(agentId, chunk)
+
         when (chunk) {
             is StreamChunk.Text -> {
                 if (!messageStarted) {

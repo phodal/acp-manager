@@ -159,6 +159,10 @@ class DispatcherPanel(
     private var selectedAgentId: String? = null
 
     init {
+        // Enable event logging for debugging
+        EventLogger.enable()
+        EventLogger.log("=== DispatcherPanel initialized ===")
+
         // Register fixed panels
         agentPanels[routaPanel.agentId] = routaPanel
         agentPanels[gatePanel.agentId] = gatePanel
@@ -621,6 +625,7 @@ class DispatcherPanel(
         // Observe ROUTA streaming chunks
         scope.launch {
             routaService.routaChunks.collect { chunk ->
+                EventLogger.log("[DISPATCHER] ROUTA chunk received: ${chunk::class.simpleName}")
                 routaPanel.appendChunk(chunk)
             }
         }
@@ -628,6 +633,7 @@ class DispatcherPanel(
         // Observe GATE streaming chunks
         scope.launch {
             routaService.gateChunks.collect { chunk ->
+                EventLogger.log("[DISPATCHER] GATE chunk received: ${chunk::class.simpleName}")
                 gatePanel.appendChunk(chunk)
             }
         }
@@ -635,6 +641,7 @@ class DispatcherPanel(
         // Observe CRAFTER streaming chunks
         scope.launch {
             routaService.crafterChunks.collect { (taskId, chunk) ->
+                EventLogger.log("[DISPATCHER] CRAFTER[$taskId] chunk received: ${chunk::class.simpleName}")
                 agentPanels[taskId]?.appendChunk(chunk)
             }
         }
@@ -1021,6 +1028,8 @@ class DispatcherPanel(
     }
 
     override fun dispose() {
+        EventLogger.log("=== DispatcherPanel disposed ===")
+        EventLogger.disable()
         routaService.reset()
         scope.cancel()
     }

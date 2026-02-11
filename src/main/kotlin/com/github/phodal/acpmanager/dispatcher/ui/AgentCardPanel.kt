@@ -45,7 +45,7 @@ class AgentCardPanel(
         }
     )
 
-    private val adapter = StreamChunkAdapter(renderer)
+    private val adapter = StreamChunkAdapter(renderer, agentId)
 
     val rendererScroll: JScrollPane = JScrollPane(renderer.container).apply {
         border = javax.swing.BorderFactory.createEmptyBorder()

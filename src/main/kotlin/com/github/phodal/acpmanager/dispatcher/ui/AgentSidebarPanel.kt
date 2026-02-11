@@ -92,8 +92,8 @@ class AgentSidebarPanel : JPanel(BorderLayout()) {
 
     private val crafterPlaceholder = JBLabel("Waiting for ROUTA to plan tasks...").apply {
         foreground = TEXT_PLACEHOLDER
-        font = font.deriveFont(Font.ITALIC, 11f)
-        border = JBUI.Borders.empty(12, 16)
+        font = font.deriveFont(Font.ITALIC, 10f)
+        border = JBUI.Borders.empty(8, 16, 8, 16)
         alignmentX = Component.LEFT_ALIGNMENT
     }
 
@@ -129,14 +129,17 @@ class AgentSidebarPanel : JPanel(BorderLayout()) {
         val routaSection = JPanel(BorderLayout()).apply {
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, 80)
+            maximumSize = Dimension(Int.MAX_VALUE, 70)
 
             add(createSectionHeader("ROUTA", ROUTA_ACCENT, null), BorderLayout.NORTH)
             routaCard.alignmentX = Component.LEFT_ALIGNMENT
-            routaCard.maximumSize = Dimension(Int.MAX_VALUE, 48)
+            routaCard.maximumSize = Dimension(Int.MAX_VALUE, 44)
             add(routaCard, BorderLayout.CENTER)
         }
         mainPanel.add(routaSection)
+
+        // Small gap between sections
+        mainPanel.add(Box.createVerticalStrut(2))
 
         // ── CRAFTERs section ────────────────────────────────────────────
         val crafterSection = JPanel(BorderLayout()).apply {
@@ -154,15 +157,18 @@ class AgentSidebarPanel : JPanel(BorderLayout()) {
         }
         mainPanel.add(crafterSection)
 
+        // Small gap between sections
+        mainPanel.add(Box.createVerticalStrut(2))
+
         // ── GATE section ────────────────────────────────────────────────
         val gateSection = JPanel(BorderLayout()).apply {
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, 80)
+            maximumSize = Dimension(Int.MAX_VALUE, 70)
 
             add(createSectionHeader("GATE", GATE_ACCENT, null), BorderLayout.NORTH)
             gateCard.alignmentX = Component.LEFT_ALIGNMENT
-            gateCard.maximumSize = Dimension(Int.MAX_VALUE, 48)
+            gateCard.maximumSize = Dimension(Int.MAX_VALUE, 44)
             add(gateCard, BorderLayout.CENTER)
         }
         mainPanel.add(gateSection)
@@ -193,19 +199,19 @@ class AgentSidebarPanel : JPanel(BorderLayout()) {
             background = JBColor(0x111921, 0x111921)
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 1, 0, SECTION_BORDER),
-                JBUI.Borders.empty(4, 12, 4, 12)
+                JBUI.Borders.empty(3, 12, 3, 12)
             )
-            maximumSize = Dimension(Int.MAX_VALUE, 28)
+            maximumSize = Dimension(Int.MAX_VALUE, 24)
 
             val leftContent = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
                 isOpaque = false
                 add(JBLabel("●").apply {
                     foreground = accentColor
-                    font = font.deriveFont(8f)
+                    font = font.deriveFont(7f)
                 })
                 add(JBLabel(label).apply {
                     foreground = accentColor
-                    font = font.deriveFont(Font.BOLD, 10f)
+                    font = font.deriveFont(Font.BOLD, 9f)
                 })
                 if (countLabel != null) {
                     add(countLabel)
@@ -361,7 +367,7 @@ private class SidebarCard(
         background = AgentSidebarPanel.CARD_BG
         border = BorderFactory.createCompoundBorder(
             BorderFactory.createMatteBorder(0, 0, 1, 0, AgentSidebarPanel.CARD_BORDER),
-            JBUI.Borders.empty(8, 12, 8, 12)
+            JBUI.Borders.empty(6, 12, 6, 12)
         )
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
 
@@ -402,12 +408,12 @@ private class SidebarCard(
         border = if (selected) {
             BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(0, 3, 1, 0, accentColor),
-                JBUI.Borders.empty(8, 9, 8, 12)
+                JBUI.Borders.empty(6, 9, 6, 12)
             )
         } else {
             BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(0, 0, 1, 0, AgentSidebarPanel.CARD_BORDER),
-                JBUI.Borders.empty(8, 12, 8, 12)
+                JBUI.Borders.empty(6, 12, 6, 12)
             )
         }
     }
