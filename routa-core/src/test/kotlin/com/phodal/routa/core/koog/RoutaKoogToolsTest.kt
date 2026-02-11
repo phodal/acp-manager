@@ -103,15 +103,7 @@ class RoutaKoogToolsTest {
         assertTrue("Expected 'Test message' in: $result", result.contains("Test message"))
     }
 
-    @Test
-    fun `RoutaToolRegistry creates all 10 tools`() = withRouta { routa ->
-        val registry = RoutaToolRegistry.create(routa.tools, "test-workspace")
-
-        // Verify the registry was created successfully (no exceptions)
-        assertNotNull(registry)
-    }
-
-    // ── Tests for new task-agent lifecycle tools ──
+    // ── Tests for task-agent lifecycle tools ──
 
     @Test
     fun `WakeOrCreateTaskAgentTool creates a new agent for a task`() = withRouta { routa ->
@@ -247,5 +239,66 @@ class RoutaKoogToolsTest {
         assertTrue("Expected 'Agent Summary' in: $result", result.contains("Agent Summary"))
         assertTrue("Expected agent name in: $result", result.contains("routa-main"))
         assertTrue("Expected 'Messages:' in: $result", result.contains("Messages:"))
+    }
+
+    // ── Event subscription tool tests ──
+
+    @Test
+    fun `SubscribeToEventsTool subscribes to events`() = withRouta { routa ->
+        val routaId = routa.coordinator.initialize("test-workspace")
+
+        val tool = SubscribeToEventsTool(routa.tools)
+        val result = tool.execute(
+            SubscribeToEventsArgs(
+                agentId = routaId,
+                eventTypes = listOf("agent:*", "task:*"),
+            )
+        )
+
+        assertTrue("Expected 'subscriptionId' in: $result", result.contains("subscriptionId"))
+        assertTrue("Expected 'agent:*' in: $result", result.contains("agent:*"))
+    }
+
+    @Test
+    fun `UnsubscribeFromEventsTool unsubscribes`() = withRouta { routa ->
+        val routaId = routa.coordinator.initialize("test-workspace")
+
+        // Subscribe first
+        val subResult = routa.tools.subscribeToEvents(
+            agentId = routaId,
+            agentName = "routa-main",
+            eventTypes = listOf("agent:*"),
+        )
+        assertTrue("Subscribe should succeed", subResult.success)
+
+        // Extract subscription ID
+        val subscriptionId = kotlinx.serialization.json.Json.parseToJsonElement(subResult.data)
+            .jsonObject["subscriptionId"]!!.jsonPrimitive.content
+
+        // Unsubscribe
+        val tool = UnsubscribeFromEventsTool(routa.tools)
+        val result = tool.execute(
+            UnsubscribeFromEventsArgs(subscriptionId = subscriptionId)
+        )
+
+        assertTrue("Expected 'unsubscribed' in: $result", result.contains("unsubscribed"))
+    }
+
+    @Test
+    fun `UnsubscribeFromEventsTool fails for unknown subscription`() = withRouta { routa ->
+        routa.coordinator.initialize("test-workspace")
+
+        val tool = UnsubscribeFromEventsTool(routa.tools)
+        val result = tool.execute(
+            UnsubscribeFromEventsArgs(subscriptionId = "nonexistent-id")
+        )
+
+        assertTrue("Expected error in: $result", result.contains("Error"))
+    }
+
+    @Test
+    fun `RoutaToolRegistry creates all 12 tools`() = withRouta { routa ->
+        val registry = RoutaToolRegistry.create(routa.tools, "test-workspace")
+        assertNotNull(registry)
     }
 }

@@ -50,7 +50,7 @@ object RoutaMcpServer {
             )
         )
 
-        // Register all 10 coordination tools
+        // Register all 12 coordination tools
         RoutaMcpToolManager(system.tools, workspaceId).registerTools(server)
 
         return server to system

@@ -9,7 +9,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.*
 import kotlinx.serialization.json.*
 
 /**
- * Registers the 10 Routa coordination tools with an MCP [Server].
+ * Registers the 12 Routa coordination tools with an MCP [Server].
  *
  * This exposes the coordination tools over the Model Context Protocol,
  * allowing any MCP-compatible client (e.g., Claude, Cursor, VS Code)
@@ -27,7 +27,7 @@ class RoutaMcpToolManager(
 ) {
 
     /**
-     * Register all 10 coordination tools with the MCP server.
+     * Register all 12 coordination tools with the MCP server.
      */
     fun registerTools(server: Server) {
         // Core coordination tools
@@ -42,6 +42,9 @@ class RoutaMcpToolManager(
         registerSendMessageToTaskAgent(server)
         registerGetAgentStatus(server)
         registerGetAgentSummary(server)
+        // Event subscription tools
+        registerSubscribeToEvents(server)
+        registerUnsubscribeFromEvents(server)
     }
 
     private fun registerListAgents(server: Server) {
@@ -424,6 +427,75 @@ class RoutaMcpToolManager(
             val result = agentTools.getAgentSummary(
                 agentId = args["agentId"]!!.jsonPrimitive.content,
             )
+            toCallToolResult(result)
+        }
+    }
+
+    private fun registerSubscribeToEvents(server: Server) {
+        server.addTool(
+            name = "subscribe_to_events",
+            description = "Subscribe to workspace events. You will be notified when matching events occur. " +
+                "Event types: \"agent:*\" (all agent events), \"agent:created\", \"agent:completed\", " +
+                "\"agent:status_changed\", \"agent:message\", \"task:*\" (all task events), " +
+                "\"task:status_changed\", \"task:delegated\", \"*\" (all events).",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("agentId") {
+                        put("type", "string")
+                        put("description", "ID of the subscribing agent")
+                    }
+                    putJsonObject("agentName") {
+                        put("type", "string")
+                        put("description", "Name of the subscribing agent (optional)")
+                    }
+                    putJsonObject("eventTypes") {
+                        put("type", "array")
+                        putJsonObject("items") { put("type", "string") }
+                        put("description", "Event type patterns to match (e.g., [\"agent:*\", \"task:completed\"])")
+                    }
+                    putJsonObject("excludeSelf") {
+                        put("type", "boolean")
+                        put("description", "Exclude events caused by yourself (default: true)")
+                    }
+                },
+                required = listOf("agentId", "eventTypes")
+            )
+        ) { request ->
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val agentId = args["agentId"]!!.jsonPrimitive.content
+            val agentName = args["agentName"]?.jsonPrimitive?.contentOrNull ?: ""
+            val eventTypes = args["eventTypes"]?.jsonArray?.map { it.jsonPrimitive.content } ?: listOf("*")
+            val excludeSelf = args["excludeSelf"]?.jsonPrimitive?.booleanOrNull ?: true
+
+            val result = agentTools.subscribeToEvents(
+                agentId = agentId,
+                agentName = agentName,
+                eventTypes = eventTypes,
+                excludeSelf = excludeSelf,
+            )
+            toCallToolResult(result)
+        }
+    }
+
+    private fun registerUnsubscribeFromEvents(server: Server) {
+        server.addTool(
+            name = "unsubscribe_from_events",
+            description = "Unsubscribe from workspace events. " +
+                "Use the subscription ID returned from subscribe_to_events.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("subscriptionId") {
+                        put("type", "string")
+                        put("description", "The subscription ID to cancel")
+                    }
+                },
+                required = listOf("subscriptionId")
+            )
+        ) { request ->
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val subscriptionId = args["subscriptionId"]!!.jsonPrimitive.content
+
+            val result = agentTools.unsubscribeFromEvents(subscriptionId)
             toCallToolResult(result)
         }
     }

@@ -21,7 +21,7 @@ import com.phodal.routa.core.tool.AgentTools
 object RoutaToolRegistry {
 
     /**
-     * Create a [ToolRegistry] with all 10 Routa coordination tools.
+     * Create a [ToolRegistry] with all 12 Routa coordination tools.
      *
      * @param agentTools The underlying AgentTools implementation.
      * @param workspaceId Default workspace ID for tools that need it.
@@ -40,6 +40,9 @@ object RoutaToolRegistry {
             tool(SendMessageToTaskAgentTool(agentTools))
             tool(GetAgentStatusTool(agentTools))
             tool(GetAgentSummaryTool(agentTools))
+            // Event subscription tools
+            tool(SubscribeToEventsTool(agentTools))
+            tool(UnsubscribeFromEventsTool(agentTools))
         }
     }
 }

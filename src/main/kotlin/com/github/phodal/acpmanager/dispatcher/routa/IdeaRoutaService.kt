@@ -9,11 +9,17 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.phodal.routa.core.RoutaFactory
 import com.phodal.routa.core.RoutaSystem
+import com.phodal.routa.core.config.NamedModelConfig
+import com.phodal.routa.core.config.RoutaConfigLoader
 import com.phodal.routa.core.coordinator.CoordinationPhase
 import com.phodal.routa.core.coordinator.CoordinationState
 import com.phodal.routa.core.event.AgentEvent
 import com.phodal.routa.core.model.AgentRole
 import com.phodal.routa.core.model.AgentStatus
+import com.phodal.routa.core.provider.AgentProvider
+import com.phodal.routa.core.provider.CapabilityBasedRouter
+import com.phodal.routa.core.provider.KoogAgentProvider
+import com.phodal.routa.core.provider.ResilientAgentProvider
 import com.phodal.routa.core.provider.StreamChunk
 import com.phodal.routa.core.runner.OrchestratorPhase
 import com.phodal.routa.core.runner.OrchestratorResult
@@ -79,7 +85,8 @@ class IdeaRoutaService(private val project: Project) : Disposable {
 
     private var routaSystem: RoutaSystem? = null
     private var orchestrator: RoutaOrchestrator? = null
-    private var provider: IdeaAcpAgentProvider? = null
+    private var router: CapabilityBasedRouter? = null
+    private var acpProvider: IdeaAcpAgentProvider? = null
     private var eventListenerJob: Job? = null
 
     /** Track agentId → role for routing stream chunks */
@@ -94,9 +101,39 @@ class IdeaRoutaService(private val project: Project) : Disposable {
     val routaModelKey = MutableStateFlow("")
     val gateModelKey = MutableStateFlow("")
 
+    /** The active LLM model config for ROUTA/GATE (KoogAgent). */
+    private val _llmModelConfig = MutableStateFlow<NamedModelConfig?>(null)
+    val llmModelConfig: StateFlow<NamedModelConfig?> = _llmModelConfig.asStateFlow()
+
     private val _mcpServerUrl = MutableStateFlow<String?>(null)
     /** The MCP server SSE URL exposed to Claude Code, if running. */
     val mcpServerUrl: StateFlow<String?> = _mcpServerUrl.asStateFlow()
+
+    /**
+     * Get available LLM model configs from ~/.autodev/config.yaml.
+     */
+    fun getAvailableLlmConfigs(): List<NamedModelConfig> {
+        return try {
+            RoutaConfigLoader.load().configs
+        } catch (e: Exception) {
+            log.warn("Failed to load LLM configs: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Get the active LLM model config.
+     */
+    fun getActiveLlmConfig(): NamedModelConfig? {
+        return _llmModelConfig.value ?: RoutaConfigLoader.getActiveModelConfig()
+    }
+
+    /**
+     * Set the LLM model config for ROUTA/GATE.
+     */
+    fun setLlmModelConfig(config: NamedModelConfig) {
+        _llmModelConfig.value = config
+    }
 
     // ── Public API ──────────────────────────────────────────────────────
 
@@ -114,9 +151,16 @@ class IdeaRoutaService(private val project: Project) : Disposable {
     /**
      * Initialize the Routa system with the specified agent keys.
      *
+     * Uses [CapabilityBasedRouter] to route:
+     * - ROUTA (planning) → [KoogAgentProvider] (LLM with tool calling)
+     * - CRAFTER (implementation) → [IdeaAcpAgentProvider] (ACP agents like Codex, Claude Code)
+     * - GATE (verification) → [KoogAgentProvider] or [IdeaAcpAgentProvider] (auto-selected by capabilities)
+     *
+     * This matches the architecture used in [RoutaCli].
+     *
      * @param crafterAgent ACP agent key for CRAFTERs
-     * @param routaAgent ACP agent key for ROUTA (defaults to crafterAgent)
-     * @param gateAgent ACP agent key for GATE (defaults to crafterAgent)
+     * @param routaAgent ACP agent key for ROUTA (used as fallback if no LLM config)
+     * @param gateAgent ACP agent key for GATE (used as fallback if no LLM config)
      */
     fun initialize(
         crafterAgent: String,
@@ -133,20 +177,43 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         val system = RoutaFactory.createInMemory(scope)
         routaSystem = system
 
-        val acpProvider = IdeaAcpAgentProvider(
+        val workspaceId = project.basePath ?: "default-workspace"
+
+        // Build capability-based router (like RoutaCli.buildProvider)
+        val providers = mutableListOf<AgentProvider>()
+
+        // 1. KoogAgentProvider for ROUTA (planning via LLM with tool calling)
+        val modelConfig = _llmModelConfig.value ?: RoutaConfigLoader.getActiveModelConfig()
+        if (modelConfig != null) {
+            val koog: AgentProvider = KoogAgentProvider(
+                agentTools = system.tools,
+                workspaceId = workspaceId,
+                modelConfig = modelConfig,
+            )
+            providers.add(ResilientAgentProvider(koog, system.context.conversationStore))
+            log.info("Added KoogAgentProvider for ROUTA/GATE: ${modelConfig.provider}/${modelConfig.model}")
+        } else {
+            log.warn("No LLM config found. ROUTA/GATE will fall back to ACP provider.")
+        }
+
+        // 2. IdeaAcpAgentProvider for CRAFTER (real coding agents)
+        val ideaAcpProvider = IdeaAcpAgentProvider(
             project = project,
             scope = scope,
             crafterAgentKey = crafterAgent,
             gateAgentKey = gateAgent,
             routaAgentKey = routaAgent,
         )
-        provider = acpProvider
+        acpProvider = ideaAcpProvider
+        providers.add(ideaAcpProvider)
 
-        val workspaceId = project.basePath ?: "default-workspace"
+        // 3. Build the CapabilityBasedRouter
+        val capRouter = CapabilityBasedRouter(*providers.toTypedArray())
+        router = capRouter
 
         orchestrator = RoutaOrchestrator(
             routa = system,
-            runner = acpProvider,
+            runner = capRouter,
             workspaceId = workspaceId,
             onPhaseChange = { phase -> handlePhaseChange(phase) },
             onStreamChunk = { agentId, chunk -> handleStreamChunk(agentId, chunk) },
@@ -160,7 +227,12 @@ class IdeaRoutaService(private val project: Project) : Disposable {
             }
         }
 
-        log.info("IdeaRoutaService initialized: crafter=$crafterAgent, routa=$routaAgent, gate=$gateAgent")
+        // Log provider routing info
+        val routerInfo = capRouter.listProviders().joinToString(", ") { "${it.name}[p=${it.priority}]" }
+        log.info("IdeaRoutaService initialized: crafter=$crafterAgent, providers=[$routerInfo]")
+        if (modelConfig != null) {
+            log.info("ROUTA/GATE LLM: ${modelConfig.provider}/${modelConfig.model}")
+        }
 
         // Pre-connect a crafter session to start MCP server for coordination tools
         scope.launch {
@@ -241,8 +313,9 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         }
 
         scope.launch {
-            provider?.shutdown()
-            provider = null
+            router?.shutdown()
+            router = null
+            acpProvider = null
         }
 
         _phase.value = OrchestratorPhase.Initializing

@@ -1,5 +1,6 @@
 package com.phodal.routa.core.coordinator
 
+import com.phodal.routa.core.event.AgentEventSubscriptionService
 import com.phodal.routa.core.event.EventBus
 import com.phodal.routa.core.store.AgentStore
 import com.phodal.routa.core.store.ConversationStore
@@ -23,8 +24,13 @@ data class AgentExecutionContext(
     val taskStore: TaskStore,
     val eventBus: EventBus,
 ) {
+    /** Lazily created event subscription service. */
+    val subscriptionService: AgentEventSubscriptionService by lazy {
+        AgentEventSubscriptionService(eventBus)
+    }
+
     /** Lazily created agent tools wired to this context's stores. */
     val agentTools: AgentTools by lazy {
-        AgentTools(agentStore, conversationStore, taskStore, eventBus)
+        AgentTools(agentStore, conversationStore, taskStore, eventBus, subscriptionService)
     }
 }

@@ -9,25 +9,14 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
 /**
- * Koog-compatible [SimpleTool] wrappers for the 10 Routa coordination tools.
+ * Koog-compatible [SimpleTool] wrappers for the 12 Routa coordination tools.
  *
  * These tools can be registered in a Koog [ai.koog.agents.core.tools.ToolRegistry]
  * and used by Koog-powered agents to coordinate multi-agent workflows.
  *
  * Usage:
  * ```kotlin
- * val toolRegistry = ToolRegistry {
- *     tool(ListAgentsTool(agentTools, workspaceId))
- *     tool(ReadAgentConversationTool(agentTools))
- *     tool(CreateAgentTool(agentTools, workspaceId))
- *     tool(DelegateTaskTool(agentTools))
- *     tool(MessageAgentTool(agentTools))
- *     tool(ReportToParentTool(agentTools))
- *     tool(WakeOrCreateTaskAgentTool(agentTools, workspaceId))
- *     tool(SendMessageToTaskAgentTool(agentTools))
- *     tool(GetAgentStatusTool(agentTools))
- *     tool(GetAgentSummaryTool(agentTools))
- * }
+ * val toolRegistry = RoutaToolRegistry.create(agentTools, workspaceId)
  * ```
  */
 
@@ -331,6 +320,59 @@ class GetAgentSummaryTool(
 ) {
     override suspend fun execute(args: GetAgentSummaryArgs): String {
         val result = agentTools.getAgentSummary(args.agentId)
+        return if (result.success) result.data else "Error: ${result.error}"
+    }
+}
+
+// ── subscribe_to_events ────────────────────────────────────────────────
+
+@Serializable
+data class SubscribeToEventsArgs(
+    val agentId: String,
+    val agentName: String = "",
+    val eventTypes: List<String>,
+    val excludeSelf: Boolean = true,
+)
+
+class SubscribeToEventsTool(
+    private val agentTools: AgentTools,
+) : SimpleTool<SubscribeToEventsArgs>(
+    argsSerializer = SubscribeToEventsArgs.serializer(),
+    name = "subscribe_to_events",
+    description = "Subscribe to workspace events. You will be notified when matching events occur. " +
+        "Event types: \"agent:*\" (all agent events), \"agent:created\", \"agent:completed\", " +
+        "\"agent:status_changed\", \"agent:message\", \"task:*\" (all task events), " +
+        "\"task:status_changed\", \"task:delegated\", \"*\" (all events). " +
+        "Use this to monitor other agents, task completions, etc.",
+) {
+    override suspend fun execute(args: SubscribeToEventsArgs): String {
+        val result = agentTools.subscribeToEvents(
+            agentId = args.agentId,
+            agentName = args.agentName,
+            eventTypes = args.eventTypes,
+            excludeSelf = args.excludeSelf,
+        )
+        return if (result.success) result.data else "Error: ${result.error}"
+    }
+}
+
+// ── unsubscribe_from_events ────────────────────────────────────────────
+
+@Serializable
+data class UnsubscribeFromEventsArgs(
+    val subscriptionId: String,
+)
+
+class UnsubscribeFromEventsTool(
+    private val agentTools: AgentTools,
+) : SimpleTool<UnsubscribeFromEventsArgs>(
+    argsSerializer = UnsubscribeFromEventsArgs.serializer(),
+    name = "unsubscribe_from_events",
+    description = "Unsubscribe from workspace events. " +
+        "Use the subscription ID returned from subscribe_to_events.",
+) {
+    override suspend fun execute(args: UnsubscribeFromEventsArgs): String {
+        val result = agentTools.unsubscribeFromEvents(args.subscriptionId)
         return if (result.success) result.data else "Error: ${result.error}"
     }
 }

@@ -15,9 +15,12 @@ import javax.swing.*
  * Routa (Coordinator) section panel — the top section of the DAG UI.
  *
  * Shows:
- * - Header: "ROUTA" label + phase indicator + status dot
+ * - Header: "ROUTA" label + phase indicator + status dot + LLM model selector
  * - Collapsible streaming area: planning output in real-time
  * - Plan summary when planning is complete
+ *
+ * ROUTA uses KoogAgent (LLM) for planning, so the model selector
+ * allows choosing which LLM model to use (from ~/.autodev/config.yaml).
  *
  * Compact by default, expandable to show full planning output.
  */
@@ -48,6 +51,16 @@ class RoutaSectionPanel : JPanel(BorderLayout()) {
         foreground = JBColor(0x8B949E, 0x8B949E)
         font = Font("Monospaced", Font.PLAIN, 10)
     }
+
+    // LLM model selector for KoogAgent
+    private val modelCombo = JComboBox<String>().apply {
+        preferredSize = Dimension(180, 24)
+        font = font.deriveFont(11f)
+        toolTipText = "LLM Model for ROUTA planning (KoogAgent)"
+    }
+
+    /** Callback when the LLM model is changed. */
+    var onModelChanged: (String) -> Unit = {}
 
     // Streaming output area
     private val outputArea = JTextArea().apply {
@@ -105,6 +118,12 @@ class RoutaSectionPanel : JPanel(BorderLayout()) {
 
             val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
                 isOpaque = false
+                add(JBLabel("LLM:").apply {
+                    foreground = JBColor(0x8B949E, 0x8B949E)
+                    font = font.deriveFont(10f)
+                })
+                add(modelCombo)
+                add(JBLabel("│").apply { foreground = JBColor(0x30363D, 0x30363D) })
                 add(statusDot)
                 add(phaseLabel)
             }
@@ -135,6 +154,27 @@ class RoutaSectionPanel : JPanel(BorderLayout()) {
                 repaint()
             }
         })
+
+        // Wire model combo
+        modelCombo.addActionListener {
+            val selected = modelCombo.selectedItem as? String ?: return@addActionListener
+            onModelChanged(selected)
+        }
+    }
+
+    /**
+     * Set available LLM models for ROUTA (from ~/.autodev/config.yaml).
+     */
+    fun setAvailableModels(models: List<String>) {
+        modelCombo.removeAllItems()
+        models.forEach { modelCombo.addItem(it) }
+    }
+
+    /**
+     * Set the selected LLM model.
+     */
+    fun setSelectedModel(model: String) {
+        modelCombo.selectedItem = model
     }
 
     /**

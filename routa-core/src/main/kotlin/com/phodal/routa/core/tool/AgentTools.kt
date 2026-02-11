@@ -1,6 +1,7 @@
 package com.phodal.routa.core.tool
 
 import com.phodal.routa.core.event.AgentEvent
+import com.phodal.routa.core.event.AgentEventSubscriptionService
 import com.phodal.routa.core.event.EventBus
 import com.phodal.routa.core.model.*
 import com.phodal.routa.core.store.AgentStore
@@ -12,14 +13,10 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * The 10 agent coordination tools that enable multi-agent collaboration.
+ * The 12 agent coordination tools that enable multi-agent collaboration.
  *
  * These tools are designed to be exposed via MCP (Model Context Protocol) so that
  * LLM-powered agents can call them during their conversation turns.
- *
- * Note: `wait_for_agent` is NOT implemented as an explicit tool — per the Intent by Augment
- * implementation analysis, waiting is handled via event subscriptions internally, not as a
- * user-facing tool.
  *
  * Core tools (from Issue #21):
  * - list_agents() → [listAgents]
@@ -34,12 +31,17 @@ import java.util.UUID
  * - send_message_to_task_agent() → [sendMessageToTaskAgent]
  * - get_agent_status() → [getAgentStatus]
  * - get_agent_summary() → [getAgentSummary]
+ *
+ * Event subscription tools:
+ * - subscribe_to_events() → [subscribeToEvents]
+ * - unsubscribe_from_events() → [unsubscribeFromEvents]
  */
 class AgentTools(
     private val agentStore: AgentStore,
     private val conversationStore: ConversationStore,
     private val taskStore: TaskStore,
     private val eventBus: EventBus,
+    private val subscriptionService: AgentEventSubscriptionService? = null,
     private val json: Json = Json { prettyPrint = true; ignoreUnknownKeys = true },
 ) {
 
@@ -603,4 +605,125 @@ class AgentTools(
 
         return ToolResult.ok(summary)
     }
+
+    // ── Event Subscription Tools ────────────────────────────────────────
+
+    /**
+     * Lazy-initialized subscription service.
+     *
+     * If no [subscriptionService] was injected, creates one on-the-fly
+     * backed by the current [eventBus].
+     */
+    private val effectiveSubscriptionService: AgentEventSubscriptionService by lazy {
+        (subscriptionService ?: AgentEventSubscriptionService(eventBus)).also {
+            it.startListening()
+        }
+    }
+
+    /**
+     * Subscribe an agent to workspace events.
+     *
+     * The agent will be notified when matching events occur. Events are batched
+     * and can be retrieved via [drainPendingEvents].
+     *
+     * Event type patterns:
+     * - `"*"` — all events
+     * - `"agent:*"` — all agent events (created, status_changed, completed, message)
+     * - `"task:*"` — all task events (status_changed, delegated)
+     * - `"agent:created"` — when a new agent is created
+     * - `"agent:completed"` — when an agent finishes and reports to parent
+     * - `"agent:status_changed"` — when an agent's status changes
+     * - `"agent:message"` — when an agent sends a message
+     * - `"task:status_changed"` — when a task's status changes
+     * - `"task:delegated"` — when a task is delegated to an agent
+     *
+     * @param agentId The subscribing agent's ID.
+     * @param agentName The subscribing agent's name.
+     * @param eventTypes Event type patterns to match.
+     * @param excludeSelf Whether to exclude events caused by this agent (default: true).
+     */
+    suspend fun subscribeToEvents(
+        agentId: String,
+        agentName: String,
+        eventTypes: List<String>,
+        excludeSelf: Boolean = true,
+    ): ToolResult {
+        val agent = agentStore.get(agentId)
+            ?: return ToolResult.fail("Agent not found: $agentId")
+
+        val subscriptionId = effectiveSubscriptionService.subscribe(
+            agentId = agentId,
+            agentName = agentName.ifEmpty { agent.name },
+            eventTypes = eventTypes,
+            excludeSelf = excludeSelf,
+        )
+
+        return ToolResult.ok(
+            json.encodeToString(
+                mapOf(
+                    "subscriptionId" to subscriptionId,
+                    "agentId" to agentId,
+                    "eventTypes" to eventTypes.joinToString(","),
+                    "excludeSelf" to excludeSelf.toString(),
+                )
+            )
+        )
+    }
+
+    /**
+     * Unsubscribe from workspace events.
+     *
+     * @param subscriptionId The subscription ID returned from [subscribeToEvents].
+     */
+    suspend fun unsubscribeFromEvents(
+        subscriptionId: String,
+    ): ToolResult {
+        val removed = effectiveSubscriptionService.unsubscribe(subscriptionId)
+        return if (removed) {
+            ToolResult.ok(
+                """{"unsubscribed": true, "subscriptionId": "$subscriptionId"}"""
+            )
+        } else {
+            ToolResult.fail("Subscription not found: $subscriptionId")
+        }
+    }
+
+    /**
+     * Drain pending events for an agent.
+     *
+     * This is NOT exposed as an MCP tool — it's called internally when an agent
+     * becomes idle, to deliver batched event notifications.
+     *
+     * @param agentId The agent to drain events for.
+     * @return List of pending events formatted as a string.
+     */
+    suspend fun drainPendingEvents(agentId: String): ToolResult {
+        val events = effectiveSubscriptionService.drainPendingEvents(agentId)
+        if (events.isEmpty()) {
+            return ToolResult.ok("""{"pendingEvents": [], "count": 0}""")
+        }
+
+        val formatted = events.map { delivered ->
+            mapOf(
+                "eventType" to delivered.eventType,
+                "timestamp" to delivered.timestamp.toString(),
+                "subscriptionId" to delivered.subscriptionId,
+                "details" to delivered.event.toSummary(),
+            )
+        }
+
+        return ToolResult.ok(json.encodeToString(formatted))
+    }
+}
+
+/**
+ * Format an AgentEvent as a human-readable summary string.
+ */
+private fun AgentEvent.toSummary(): String = when (this) {
+    is AgentEvent.AgentCreated -> "Agent $agentId created in workspace $workspaceId"
+    is AgentEvent.AgentStatusChanged -> "Agent $agentId: $oldStatus → $newStatus"
+    is AgentEvent.AgentCompleted -> "Agent $agentId completed (parent: $parentId)"
+    is AgentEvent.MessageReceived -> "Message from $fromAgentId to $toAgentId"
+    is AgentEvent.TaskStatusChanged -> "Task $taskId: $oldStatus → $newStatus"
+    is AgentEvent.TaskDelegated -> "Task $taskId delegated to agent $agentId by $delegatedBy"
 }
