@@ -11,7 +11,7 @@ kotlinxIo = "0.8.0"
 snakeyaml = "2.4"
 kaml = "0.77.0"
 slf4j = "2.0.16"
-ktor = "3.0.3"
+ktor = "3.4.0"
 
 # plugins
 changelog = "2.5.0"
