@@ -95,6 +95,11 @@ class IdeaRoutaService(private val project: Project) : Disposable {
     // ── Public API ──────────────────────────────────────────────────────
 
     /**
+     * Check if the service has been initialized.
+     */
+    fun isInitialized(): Boolean = orchestrator != null
+
+    /**
      * Get the coordination state from the underlying RoutaCoordinator.
      */
     val coordinationState: StateFlow<CoordinationState>

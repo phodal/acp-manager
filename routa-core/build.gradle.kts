@@ -35,6 +35,12 @@ dependencies {
     // MCP SDK for tool exposure
     implementation(libs.mcp.sdk)
 
+    // Ktor for MCP WebSocket/SSE server
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.cio)
+    implementation(libs.ktor.server.websockets)
+    implementation(libs.ktor.server.sse)
+
     // ACP SDK for agent spawning (CRAFTER backend)
     implementation(libs.acp.sdk) {
         exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")

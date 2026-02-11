@@ -4,6 +4,7 @@ import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
 import com.github.phodal.acpmanager.claudecode.ClaudeCodeClient
 import com.github.phodal.acpmanager.config.AcpAgentConfig
+import com.phodal.routa.core.mcp.RoutaMcpWebSocketServer
 import com.github.phodal.acpmanager.config.AcpConfigService
 import com.github.phodal.acpmanager.ui.renderer.PlanEntry
 import com.github.phodal.acpmanager.ui.renderer.PlanEntryStatus
@@ -80,6 +81,7 @@ class AgentSession(
     private var managedProcess: ManagedProcess? = null
     private var stderrJob: Job? = null
     private var isClaudeCodeMode = false
+    private var routaMcpServer: RoutaMcpWebSocketServer? = null
 
     private val _state = MutableStateFlow(AgentSessionState(agentKey))
     val state: StateFlow<AgentSessionState> = _state.asStateFlow()
@@ -165,6 +167,14 @@ class AgentSession(
         log.info("Connecting to Claude Code for '$agentKey' using stream-json mode")
         isClaudeCodeMode = true
 
+        // Start the Routa MCP server so Claude Code can use coordination tools
+        val mcpServer = RoutaMcpWebSocketServer(workspaceId = agentKey)
+        mcpServer.start()
+        this.routaMcpServer = mcpServer
+        val mcpConfigJson = mcpServer.toMcpConfigJson()
+        log.info("Routa MCP server started on port ${mcpServer.port} for '$agentKey'")
+        log.info("MCP Config: $mcpConfigJson")
+
         val claudeCodeClient = ClaudeCodeClient(
             scope = scope,
             binaryPath = config.command,
@@ -172,7 +182,8 @@ class AgentSession(
             additionalArgs = config.args,
             envVars = config.env,
             permissionMode = if (config.autoApprove) "bypassPermissions" else "acceptEdits",
-            allowedTools = config.allowedTools
+            allowedTools = config.allowedTools,
+            mcpConfigs = listOf(mcpConfigJson)
         )
 
         // Forward Claude Code events to our render events flow
@@ -621,6 +632,8 @@ class AgentSession(
             if (isClaudeCodeMode) {
                 claudeClient?.stop()
                 claudeClient = null
+                routaMcpServer?.stop()
+                routaMcpServer = null
             } else {
                 client?.disconnect()
                 client = null

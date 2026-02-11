@@ -271,6 +271,16 @@ class RoutaMcpToolManager(
                 success = success,
             )
 
+            // Log the report for verification
+            println("🎯 MCP Tool Called: report_to_parent")
+            println("   Agent: $agentId")
+            println("   Task: ${report.taskId}")
+            println("   Success: ${report.success}")
+            println("   Summary: ${report.summary}")
+            if (filesModified.isNotEmpty()) {
+                println("   Files: ${filesModified.joinToString(", ")}")
+            }
+
             val result = agentTools.reportToParent(agentId, report)
             toCallToolResult(result)
         }

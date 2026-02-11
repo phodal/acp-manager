@@ -28,6 +28,12 @@ class ClaudeCodeClient(
     private val additionalArgs: List<String> = emptyList(),
     private val envVars: Map<String, String> = emptyMap(),
     private val allowedTools: List<String> = emptyList(),
+    /**
+     * MCP config JSON string or file path(s) to pass via `--mcp-config`.
+     * Used to connect Claude Code to the RoutaMcpServer for multi-agent coordination.
+     * Example: `{"mcpServers":{"routa":{"url":"http://127.0.0.1:12345/sse","type":"sse"}}}`
+     */
+    private val mcpConfigs: List<String> = emptyList(),
 ) {
     private var process: Process? = null
     private var writer: BufferedWriter? = null
@@ -66,6 +72,11 @@ class ClaudeCodeClient(
         // Add allowed tools for auto-approval
         if (allowedTools.isNotEmpty()) {
             cmd.addAll(listOf("--allowedTools", allowedTools.joinToString(",")))
+        }
+
+        // Add MCP server configs (e.g., RoutaMcpServer for multi-agent coordination)
+        for (mcpConfig in mcpConfigs) {
+            cmd.addAll(listOf("--mcp-config", mcpConfig))
         }
 
         cmd.addAll(additionalArgs)
