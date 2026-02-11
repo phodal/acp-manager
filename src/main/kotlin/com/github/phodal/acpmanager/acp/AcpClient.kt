@@ -62,7 +62,7 @@ class AcpClient(
     suspend fun connect() {
         val transport = StdioTransport(
             parentScope = coroutineScope,
-            ioDispatcher = Dispatchers.Default,
+            ioDispatcher = Dispatchers.IO,
             input = input.buffered(),
             output = output.buffered(),
             name = clientName

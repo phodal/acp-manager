@@ -183,6 +183,11 @@ class RoutaOrchestrator(
      */
     private fun injectAgentIdentity(prompt: String, agentId: String, taskId: String): String {
         return buildString {
+            appendLine("--- Agent Identity ---")
+            appendLine("agent_id: $agentId")
+            appendLine("task_id: $taskId")
+            appendLine("----------------------")
+            appendLine()
             append(prompt)
         }
     }
@@ -222,24 +227,55 @@ class RoutaOrchestrator(
         // If agent is already COMPLETED, Koog tool calling handled it
         if (agent.status == AgentStatus.COMPLETED) return
 
-        // Parse verdict from output
-        val approved = output.contains("APPROVED", ignoreCase = true) &&
-            !output.contains("NOT APPROVED", ignoreCase = true) &&
-            !output.contains("NOT_APPROVED", ignoreCase = true)
-
         // Find all tasks being verified
-        val state = routa.coordinator.coordinationState.value
         val reviewTasks = routa.context.taskStore.listByStatus(workspaceId, TaskStatus.REVIEW_REQUIRED)
 
         for (task in reviewTasks) {
+            // Compute per-task verdict by looking for task-specific context in the output
+            val taskSection = findTaskSection(output, task)
+            val approvedForTask = taskSection.contains("APPROVED", ignoreCase = true) &&
+                !taskSection.contains("NOT APPROVED", ignoreCase = true) &&
+                !taskSection.contains("NOT_APPROVED", ignoreCase = true)
+
             val report = CompletionReport(
                 agentId = gateAgentId,
                 taskId = task.id,
-                summary = extractSummary(output),
-                success = approved,
+                summary = extractSummary(taskSection.ifEmpty { output }),
+                success = approvedForTask,
             )
             routa.tools.reportToParent(gateAgentId, report)
         }
+    }
+
+    /**
+     * Find the section of the GATE output relevant to a specific task.
+     * Falls back to the full output if no task-specific section is found.
+     */
+    private fun findTaskSection(output: String, task: Task): String {
+        // Try to find a section mentioning the task ID or title
+        val lines = output.lines()
+        val taskIdentifiers = listOfNotNull(task.id, task.title).filter { it.isNotBlank() }
+
+        for (identifier in taskIdentifiers) {
+            val startIdx = lines.indexOfFirst { it.contains(identifier, ignoreCase = true) }
+            if (startIdx >= 0) {
+                // Take lines from the task mention to the next task section or end
+                val sectionLines = mutableListOf<String>()
+                for (i in startIdx until lines.size) {
+                    val line = lines[i]
+                    // Stop at the next task section header (but include the first match)
+                    if (i > startIdx && taskIdentifiers.none { line.contains(it, ignoreCase = true) } &&
+                        (line.startsWith("## ") || line.startsWith("---"))) {
+                        break
+                    }
+                    sectionLines.add(line)
+                }
+                return sectionLines.joinToString("\n")
+            }
+        }
+
+        // Fallback: return the full output
+        return output
     }
 
     // ── Context building ────────────────────────────────────────────────

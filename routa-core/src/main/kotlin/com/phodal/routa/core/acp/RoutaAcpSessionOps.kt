@@ -12,6 +12,7 @@ import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.logging.Logger
 
 /**
  * Platform-independent ACP session operations.
@@ -34,6 +35,11 @@ class RoutaAcpSessionOps(
 
     private val terminals = ConcurrentHashMap<String, TerminalSession>()
     private val terminalIdCounter = AtomicInteger(0)
+
+    companion object {
+        private val logger = Logger.getLogger(RoutaAcpSessionOps::class.java.name)
+        private const val MAX_OUTPUT_BUFFER = 1024 * 1024 // 1 MB
+    }
 
     override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) {
         onSessionUpdate(notification)
@@ -82,9 +88,12 @@ class RoutaAcpSessionOps(
     ): CreateTerminalResponse = withContext(Dispatchers.IO) {
         val terminalId = "term-${terminalIdCounter.incrementAndGet()}"
         val effectiveCwd = cwd ?: this@RoutaAcpSessionOps.cwd
-        val fullCommand = if (args.isEmpty()) command else "$command ${args.joinToString(" ")}"
-        val shell = if (File("/bin/bash").exists()) "/bin/bash" else "/bin/sh"
-        val cmdList = listOf(shell, "-c", fullCommand)
+
+        val cmdList = if (args.isEmpty()) {
+            listOf(command)
+        } else {
+            listOf(command) + args
+        }
 
         val pb = ProcessBuilder(cmdList).apply {
             directory(File(effectiveCwd))
@@ -104,10 +113,17 @@ class RoutaAcpSessionOps(
                     while (reader.read(buffer).also { bytesRead = it } != -1) {
                         synchronized(session.outputBuffer) {
                             session.outputBuffer.append(String(buffer, 0, bytesRead))
+                            if (session.outputBuffer.length > MAX_OUTPUT_BUFFER) {
+                                val excess = session.outputBuffer.length - MAX_OUTPUT_BUFFER
+                                session.outputBuffer.delete(0, excess)
+                            }
                         }
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (t: Throwable) {
+                logger.severe("Terminal $terminalId read failed: ${t.message}")
+                if (t is Error) throw t
+            }
         }, "routa-terminal-$terminalId").apply { isDaemon = true }.start()
 
         CreateTerminalResponse(terminalId = terminalId, _meta = JsonNull)
@@ -144,13 +160,20 @@ class RoutaAcpSessionOps(
         }
 
     override suspend fun terminalKill(terminalId: String, _meta: JsonElement?): KillTerminalCommandResponse {
-        terminals[terminalId]?.process?.takeIf { it.isAlive }?.destroyForcibly()
+        val session = terminals.remove(terminalId)
+        session?.process?.takeIf { it.isAlive }?.destroyForcibly()
         return KillTerminalCommandResponse(_meta = JsonNull)
     }
 
     private fun resolvePath(path: String): Path {
-        val p = Path.of(path)
-        return if (p.isAbsolute) p else Path.of(cwd, path)
+        val candidate = Path.of(path)
+        val resolved = if (candidate.isAbsolute) candidate else Path.of(cwd, path)
+        val canonicalCwd = Path.of(cwd).normalize().toAbsolutePath()
+        val canonicalCandidate = resolved.normalize().toAbsolutePath()
+        if (!canonicalCandidate.startsWith(canonicalCwd)) {
+            throw SecurityException("Path traversal blocked: $path resolves outside cwd ($cwd)")
+        }
+        return canonicalCandidate
     }
 
     fun releaseAll() {

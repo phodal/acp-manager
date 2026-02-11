@@ -27,19 +27,16 @@ class AcpProcessManager {
         cwd: String,
         env: Map<String, String> = emptyMap(),
     ): ManagedProcess {
-        val existing = processes[agentKey]
-        if (existing != null && existing.isAlive()) {
-            return existing
-        }
-
-        if (existing != null) {
-            existing.destroyQuietly()
-            processes.remove(agentKey)
-        }
-
-        val managed = spawnProcess(agentKey, command, cwd, env)
-        processes[agentKey] = managed
-        return managed
+        return processes.compute(agentKey) { _, existing ->
+            when {
+                existing != null && existing.isAlive() -> existing
+                existing != null -> {
+                    existing.destroyQuietly()
+                    spawnProcess(agentKey, command, cwd, env)
+                }
+                else -> spawnProcess(agentKey, command, cwd, env)
+            }
+        }!!
     }
 
     fun terminateProcess(agentKey: String) {

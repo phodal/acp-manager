@@ -7,8 +7,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.io.IOException
+import java.net.ConnectException
+import java.util.concurrent.TimeoutException
 
 /**
  * End-to-end tests using Claude Code CLI for CRAFTER and GATE.
@@ -77,19 +81,25 @@ class ClaudeE2ETest {
             println(result)
 
             // Check if files were actually created
-            val files = testDir.listFiles()?.map { it.name } ?: emptyList()
+            val files = testDir.walkTopDown().map { it.relativeTo(testDir).path }.toList()
             println("\n=== FILES CREATED ===")
             files.forEach { println("  - $it") }
 
             // Verify
-            assert(files.any { it.endsWith(".java") }) { "Expected at least one .java file in $testDir" }
+            assertTrue("Expected at least one .java file in $testDir", files.any { it.endsWith(".java") })
 
             val tasks = runBlocking { routa.coordinator.getTaskSummary() }
             println("\n=== TASKS ===")
             tasks.forEach { t -> println("  [${t.status}] ${t.title} (verdict: ${t.verdict})") }
-        } catch (e: Exception) {
+        } catch (e: IOException) {
             println("Error: ${e.message}")
-            assumeTrue("Test failed due to external error: ${e.message}", false)
+            assumeTrue("Test skipped due to IO error: ${e.message}", false)
+        } catch (e: ConnectException) {
+            println("Error: ${e.message}")
+            assumeTrue("Test skipped due to connection error: ${e.message}", false)
+        } catch (e: TimeoutException) {
+            println("Error: ${e.message}")
+            assumeTrue("Test skipped due to timeout: ${e.message}", false)
         } finally {
             routa.coordinator.shutdown()
         }
@@ -136,18 +146,24 @@ class ClaudeE2ETest {
             println("\n=== RESULT ===")
             println(result)
 
-            val files = testDir.listFiles()?.map { it.name } ?: emptyList()
+            val files = testDir.walkTopDown().map { it.relativeTo(testDir).path }.toList()
             println("\n=== FILES CREATED ===")
             files.forEach { println("  - $it") }
 
-            assert(files.any { it.endsWith(".py") }) { "Expected at least one .py file in $testDir" }
+            assertTrue("Expected at least one .py file in $testDir", files.any { it.endsWith(".py") })
 
             val tasks = runBlocking { routa.coordinator.getTaskSummary() }
             println("\n=== TASKS ===")
             tasks.forEach { t -> println("  [${t.status}] ${t.title}") }
-        } catch (e: Exception) {
+        } catch (e: IOException) {
             println("Error: ${e.message}")
-            assumeTrue("Test failed: ${e.message}", false)
+            assumeTrue("Test skipped due to IO error: ${e.message}", false)
+        } catch (e: ConnectException) {
+            println("Error: ${e.message}")
+            assumeTrue("Test skipped due to connection error: ${e.message}", false)
+        } catch (e: TimeoutException) {
+            println("Error: ${e.message}")
+            assumeTrue("Test skipped due to timeout: ${e.message}", false)
         } finally {
             routa.coordinator.shutdown()
         }
@@ -213,16 +229,22 @@ class ClaudeE2ETest {
             println("\n=== utils.py content ===")
             println(utilsContent)
 
-            val files = testDir.listFiles()?.map { it.name } ?: emptyList()
+            val files = testDir.walkTopDown().map { it.relativeTo(testDir).path }.toList()
             println("\n=== FILES ===")
             files.forEach { println("  - $it") }
 
             val tasks = runBlocking { routa.coordinator.getTaskSummary() }
             println("\n=== TASKS ===")
             tasks.forEach { t -> println("  [${t.status}] ${t.title}") }
-        } catch (e: Exception) {
+        } catch (e: IOException) {
             println("Error: ${e.message}")
-            assumeTrue("Test failed: ${e.message}", false)
+            assumeTrue("Test skipped due to IO error: ${e.message}", false)
+        } catch (e: ConnectException) {
+            println("Error: ${e.message}")
+            assumeTrue("Test skipped due to connection error: ${e.message}", false)
+        } catch (e: TimeoutException) {
+            println("Error: ${e.message}")
+            assumeTrue("Test skipped due to timeout: ${e.message}", false)
         } finally {
             routa.coordinator.shutdown()
         }

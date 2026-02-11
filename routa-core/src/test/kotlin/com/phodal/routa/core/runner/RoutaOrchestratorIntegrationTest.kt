@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -57,9 +58,10 @@ class RoutaOrchestratorIntegrationTest {
             }
 
             // Basic assertion - we should get a result (not crash)
-            assert(result !is OrchestratorResult.Failed) {
-                "Orchestration should not fail: $result"
-            }
+            assertFalse(
+                "Orchestration should not fail: $result",
+                result is OrchestratorResult.Failed
+            )
         } catch (e: Exception) {
             println("Integration test error (LLM might be unavailable): ${e.message}")
             assumeTrue("LLM unavailable: ${e.message}", false)
@@ -102,9 +104,10 @@ class RoutaOrchestratorIntegrationTest {
                 println("  [${t.status}] ${t.title}")
             }
 
-            assert(result !is OrchestratorResult.Failed) {
-                "Orchestration should not fail: $result"
-            }
+            assertFalse(
+                "Orchestration should not fail: $result",
+                result is OrchestratorResult.Failed
+            )
         } catch (e: Exception) {
             println("Integration test error: ${e.message}")
             assumeTrue("LLM unavailable: ${e.message}", false)

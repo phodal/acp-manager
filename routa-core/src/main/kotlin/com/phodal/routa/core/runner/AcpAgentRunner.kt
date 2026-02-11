@@ -8,6 +8,7 @@ import com.phodal.routa.core.config.AcpAgentConfig
 import com.phodal.routa.core.model.AgentRole
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.io.asSink
 import kotlinx.io.asSource
@@ -95,6 +96,7 @@ class AcpAgentRunner(
         } finally {
             client.disconnect()
             processManager.terminateProcess(processKey)
+            scope.coroutineContext[Job]?.cancel()
         }
 
         return resultBuilder.toString().ifEmpty {
