@@ -41,6 +41,15 @@ configurations.all {
         exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
         exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
     }
+    // IntelliJ Platform bundles kotlinx-coroutines-core in the test sandbox.
+    // Transitive coroutines from test dependencies (kotlinx-coroutines-test, ktor-client, etc.)
+    // cause classpath duplication → IntellijCoroutines from one JAR calls
+    // BuildersKt.runBlockingWithParallelismCompensation which doesn't exist in the other JAR.
+    // Exclude project's coroutines-core from test runtime so only the platform's version is used.
+    if (name == "testRuntimeClasspath") {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
+    }
 }
 
 // Dependencies are managed with Gradle version catalog - read more: https://docs.gradle.org/current/userguide/version_catalogs.html
