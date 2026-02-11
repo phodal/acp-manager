@@ -100,6 +100,12 @@ class IdeaRoutaService(private val project: Project) : Disposable {
     /** Track crafterId → taskId mapping */
     private val crafterTaskMap = mutableMapOf<String, String>()
 
+    /** Track crafterId → task title (cached from handlePhaseChange where suspend context is available) */
+    private val crafterTitleMap = mutableMapOf<String, String>()
+
+    /** Lock for thread-safe updates to _crafterStates */
+    private val crafterStateLock = Any()
+
     // ── Model Configuration ─────────────────────────────────────────────
 
     val crafterModelKey = MutableStateFlow("")
@@ -291,6 +297,7 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         _crafterStates.value = emptyMap()
         agentRoleMap.clear()
         crafterTaskMap.clear()
+        crafterTitleMap.clear()
 
         // When using ACP for ROUTA, prepend the system prompt from RouteDefinitions
         // This provides the ROUTA role context that would normally be injected by KoogAgent
@@ -375,6 +382,7 @@ class IdeaRoutaService(private val project: Project) : Disposable {
         _result.value = null
         agentRoleMap.clear()
         crafterTaskMap.clear()
+        crafterTitleMap.clear()
     }
 
     // ── Event Handlers ──────────────────────────────────────────────────
@@ -406,6 +414,9 @@ class IdeaRoutaService(private val project: Project) : Disposable {
 
                 log.info("CrafterRunning: crafterId=${phase.crafterId.take(8)}, taskId=${phase.taskId.take(8)}, " +
                     "title='$title', taskFromStore=${task != null}")
+
+                // Cache the title so updateCrafterState can use it as fallback
+                crafterTitleMap[phase.crafterId] = title
 
                 updateCrafterState(phase.crafterId) {
                     CrafterStreamState(
@@ -524,13 +535,16 @@ class IdeaRoutaService(private val project: Project) : Disposable {
     }
 
     private fun updateCrafterState(agentId: String, updater: (CrafterStreamState) -> CrafterStreamState) {
-        val current = _crafterStates.value.toMutableMap()
-        val existing = current[agentId] ?: CrafterStreamState(
-            agentId = agentId,
-            taskId = crafterTaskMap[agentId] ?: "",
-        )
-        current[agentId] = updater(existing)
-        _crafterStates.value = current
+        synchronized(crafterStateLock) {
+            val current = _crafterStates.value.toMutableMap()
+            val existing = current[agentId] ?: CrafterStreamState(
+                agentId = agentId,
+                taskId = crafterTaskMap[agentId] ?: "",
+                taskTitle = crafterTitleMap[agentId] ?: "",
+            )
+            current[agentId] = updater(existing)
+            _crafterStates.value = current
+        }
     }
 
     override fun dispose() {

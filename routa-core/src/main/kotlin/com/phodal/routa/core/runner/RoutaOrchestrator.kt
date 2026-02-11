@@ -18,7 +18,7 @@ import kotlinx.serialization.json.Json
  * ```
  * User Request
  *   → ROUTA plans (@@@task blocks)
- *     → Wave of CRAFTER agents execute tasks (PARALLEL)
+ *     → Wave of CRAFTER agents execute tasks (sequential by default)
  *       → Each CRAFTER reports completion
  *         → GATE verifies all work
  *           → APPROVED: done
@@ -26,8 +26,9 @@ import kotlinx.serialization.json.Json
  * ```
  *
  * Supports both the legacy [AgentRunner] interface and the new [AgentProvider]
- * interface. When an [AgentProvider] is used, Crafters in the same wave execute
- * in parallel and streaming chunks are forwarded via [onStreamChunk].
+ * interface. By default, Crafters execute sequentially. Set [parallelCrafters] = true
+ * to enable parallel execution within a wave. Streaming chunks are forwarded
+ * via [onStreamChunk].
  *
  * **Tool calling strategy:**
  * - If the LLM supports function calling (via Koog), tools like `report_to_parent`
@@ -52,6 +53,12 @@ class RoutaOrchestrator(
     private val runner: AgentRunner,
     private val workspaceId: String,
     private val maxWaves: Int = 3,
+    /**
+     * Whether to execute CRAFTERs in a wave in parallel.
+     * When false (default), CRAFTERs execute sequentially one at a time.
+     * When true, all CRAFTERs in a wave execute concurrently via coroutineScope + async.
+     */
+    private val parallelCrafters: Boolean = false,
     private val onPhaseChange: (suspend (OrchestratorPhase) -> Unit)? = null,
     private val onStreamChunk: ((agentId: String, chunk: StreamChunk) -> Unit)? = null,
 ) {
@@ -123,8 +130,8 @@ class RoutaOrchestrator(
                 continue
             }
 
-            // Run CRAFTERs — parallel when using AgentProvider, sequential otherwise
-            if (provider != null && delegations.size > 1) {
+            // Run CRAFTERs — parallel or sequential based on configuration
+            if (parallelCrafters && provider != null && delegations.size > 1) {
                 // ── Parallel execution via coroutineScope + async ──
                 coroutineScope {
                     val jobs = delegations.map { (crafterId, taskId) ->
@@ -135,7 +142,7 @@ class RoutaOrchestrator(
                     jobs.awaitAll()
                 }
             } else {
-                // ── Sequential fallback (legacy AgentRunner) ──
+                // ── Sequential execution (default) ──
                 for ((crafterId, taskId) in delegations) {
                     runSingleCrafter(crafterId, taskId)
                 }
