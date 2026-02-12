@@ -49,17 +49,27 @@ class TextBasedToolExecutor(
 
     /**
      * Execute a single tool call.
+     *
+     * Note: The Workspace Agent is a Coordinator role with READ-ONLY access.
+     * - `read_file` and `list_files` are available for exploring the codebase
+     * - `write_file` is NOT available — implementation must be delegated to Implementor agents
      */
     fun execute(toolCall: ToolCallExtractor.ToolCall): ToolResult {
         return try {
             when (toolCall.name) {
                 "read_file" -> executeReadFile(toolCall.arguments)
-                "write_file" -> executeWriteFile(toolCall.arguments)
                 "list_files" -> executeListFiles(toolCall.arguments)
+                "write_file" -> ToolResult(
+                    toolName = "write_file",
+                    success = false,
+                    output = "Error: write_file is not available. As a Coordinator, you cannot edit files directly. " +
+                            "Create an @@@task block to delegate implementation to an Implementor agent.",
+                )
                 else -> ToolResult(
                     toolName = toolCall.name,
                     success = false,
-                    output = "Error: Unknown tool '${toolCall.name}'. Available tools: read_file, write_file, list_files",
+                    output = "Error: Unknown tool '${toolCall.name}'. Available tools: read_file, list_files. " +
+                            "Note: write_file is not available — delegate to Implementor agents via @@@task blocks.",
                 )
             }
         } catch (e: Exception) {
