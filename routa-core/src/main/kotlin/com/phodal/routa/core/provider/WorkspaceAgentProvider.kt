@@ -12,6 +12,7 @@ import ai.koog.prompt.message.Message
 import com.phodal.routa.core.koog.RoutaAgentFactory
 import com.phodal.routa.core.koog.TextBasedToolExecutor
 import com.phodal.routa.core.koog.ToolCallExtractor
+import com.phodal.routa.core.koog.ToolCallStreamFilter
 import kotlinx.coroutines.flow.cancellable
 import java.util.concurrent.ConcurrentHashMap
 
@@ -292,8 +293,16 @@ class WorkspaceAgentProvider(
     /**
      * Streaming version of the agent loop.
      *
-     * Streams text chunks to the caller while also extracting tool calls
-     * from the accumulated response.
+     * Uses [ToolCallStreamFilter] to intercept `<tool_call>` XML blocks from
+     * the streaming text, preventing raw XML from appearing in the UI. Instead,
+     * clean text is emitted as [StreamChunk.Text] and tool calls are emitted as
+     * [StreamChunk.ToolCall] with proper status transitions (STARTED → COMPLETED/FAILED).
+     *
+     * This gives the UI:
+     * - Real-time streaming of the agent's thinking/reasoning text
+     * - Clean tool call panels (via [ToolCallPanel]) with collapsible details
+     * - Tool execution status updates (spinner → checkmark/error)
+     * - Multi-iteration support (agent can make multiple rounds of tool calls)
      */
     private suspend fun runStreamingAgentLoop(
         executor: SingleLLMPromptExecutor,
@@ -308,7 +317,6 @@ class WorkspaceAgentProvider(
         conversationMessages.add("user" to userPrompt)
 
         val fullOutput = StringBuilder()
-        var lastResponse = ""
 
         for (iteration in 1..maxIterations) {
             if (activeAgents[agentId]?.cancelled == true) {
@@ -325,62 +333,88 @@ class WorkspaceAgentProvider(
                 }
             }
 
-            // Stream the LLM response
-            val responseBuilder = StringBuilder()
+            // Use ToolCallStreamFilter to intercept <tool_call> blocks from the stream.
+            // Clean text (outside tool call blocks) is emitted as StreamChunk.Text in real-time.
+            // Tool call blocks are silently buffered and NOT shown as text.
+            val filter = ToolCallStreamFilter()
+
             executor.executeStreaming(llmPrompt, model, tools = emptyList())
                 .cancellable()
                 .collect { frame ->
                     when (frame) {
                         is StreamFrame.Append -> {
-                            responseBuilder.append(frame.text)
-                            onChunk(StreamChunk.Text(frame.text))
+                            // Feed text through the filter:
+                            // - Clean text → emitted as StreamChunk.Text immediately
+                            // - <tool_call> blocks → silently intercepted (not shown as text)
+                            filter.feed(frame.text) { cleanText ->
+                                if (cleanText.isNotEmpty()) {
+                                    onChunk(StreamChunk.Text(cleanText))
+                                }
+                            }
                         }
                         is StreamFrame.End -> {
-                            // Don't emit completed yet — we may have more iterations
+                            // Flush any remaining buffered text (handles partial tags)
+                            filter.flush { remaining ->
+                                if (remaining.isNotEmpty()) {
+                                    onChunk(StreamChunk.Text(remaining))
+                                }
+                            }
                         }
                         is StreamFrame.ToolCall -> {
                             // Native tool calls shouldn't happen (we passed empty tools)
-                            // but handle gracefully
                             onChunk(StreamChunk.ToolCall(frame.name, ToolCallStatus.IN_PROGRESS))
                         }
                     }
                 }
 
-            lastResponse = responseBuilder.toString()
-            fullOutput.append(lastResponse)
+            // Get the full response (including tool call XML) for conversation history
+            val fullResponse = filter.getFullText()
+            val cleanResponse = ToolCallExtractor.removeToolCalls(fullResponse)
+            fullOutput.append(cleanResponse)
 
-            // Check for tool calls
-            val toolCalls = ToolCallExtractor.extractToolCalls(lastResponse)
+            // Extract all tool calls from the full response
+            val allToolCalls = ToolCallExtractor.extractToolCalls(fullResponse)
 
-            if (toolCalls.isEmpty()) {
+            if (allToolCalls.isEmpty()) {
+                // No tool calls — agent is done
                 onChunk(StreamChunk.Completed("end"))
                 return fullOutput.toString()
             }
 
-            // Notify about tool executions
-            for (tc in toolCalls) {
-                onChunk(StreamChunk.ToolCall(tc.name, ToolCallStatus.STARTED, tc.arguments.toString()))
-            }
+            // Add assistant response to conversation (with tool call XML intact)
+            conversationMessages.add("assistant" to fullResponse)
 
-            // Add assistant response to conversation
-            conversationMessages.add("assistant" to lastResponse)
+            // Execute tool calls ONE BY ONE with proper STARTED → COMPLETED pairing.
+            // The StreamChunkAdapter tracks currentToolCallId as a single value,
+            // so we must pair each STARTED with its COMPLETED before the next one.
+            val results = mutableListOf<TextBasedToolExecutor.ToolResult>()
 
-            // Execute tools
-            val results = toolExecutor.executeAll(toolCalls)
+            for (call in allToolCalls) {
+                // Emit STARTED for this tool call
+                onChunk(StreamChunk.ToolCall(
+                    name = call.name,
+                    status = ToolCallStatus.STARTED,
+                    arguments = call.arguments.toString(),
+                ))
 
-            // Notify completion of each tool
-            for (result in results) {
+                // Execute the tool
+                val result = toolExecutor.execute(call)
+                results.add(result)
+
+                // Emit COMPLETED/FAILED immediately after execution
                 val status = if (result.success) ToolCallStatus.COMPLETED else ToolCallStatus.FAILED
-                onChunk(StreamChunk.ToolCall(result.toolName, status, result = result.output.take(200)))
+                onChunk(StreamChunk.ToolCall(
+                    name = result.toolName,
+                    status = status,
+                    result = result.output.take(500),
+                ))
             }
 
-            // Format results and add to conversation
+            // Format results and add to conversation for next iteration
             val resultMessage = toolExecutor.formatResults(results)
             conversationMessages.add("user" to resultMessage)
 
-            // Add a visual separator in the stream
-            onChunk(StreamChunk.Text("\n\n"))
-            fullOutput.append("\n\n")
+            filter.reset()
         }
 
         onChunk(StreamChunk.Completed("max_iterations"))

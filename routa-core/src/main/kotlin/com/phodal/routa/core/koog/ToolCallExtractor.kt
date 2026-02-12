@@ -5,20 +5,31 @@ import kotlinx.serialization.json.*
 /**
  * Extracts tool calls from agent LLM text responses.
  *
- * Supports multiple formats (inspired by Intent's tool-call-extractor.ts):
- * - XML format: `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`
- * - Markdown JSON blocks: ````json {"name": "...", "arguments": {...}} ````
+ * Supports multiple formats:
  *
- * The XML `<tool_call>` format is preferred and most reliable. The system prompt
- * instructs the LLM to use this format exclusively.
- *
- * ## Example
- *
+ * ### Format 1: JSON inside XML tags (preferred)
+ * ```xml
+ * <tool_call>
+ * {"name": "read_file", "arguments": {"path": "src/main.kt"}}
+ * </tool_call>
  * ```
- * val response = "Let me read the file.\n<tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"src/main.kt\"}}</tool_call>"
- * val calls = ToolCallExtractor.extractToolCalls(response)
- * // calls = [ToolCall(name="read_file", arguments={"path": "src/main.kt"})]
+ *
+ * ### Format 2: Pure XML (Claude-style)
+ * ```xml
+ * <tool_call>
+ * <name>read_file</name>
+ * <arguments>
+ * <path>src/main.kt</path>
+ * </arguments>
+ * </tool_call>
  * ```
+ *
+ * ### Format 3: Markdown JSON blocks
+ * ```json
+ * {"name": "read_file", "arguments": {"path": "src/main.kt"}}
+ * ```
+ *
+ * Inspired by Intent's `tool-call-extractor.ts`.
  */
 object ToolCallExtractor {
 
@@ -35,17 +46,20 @@ object ToolCallExtractor {
     /**
      * Extract all tool calls from the given response text.
      *
-     * Tries XML `<tool_call>` tags first, then falls back to markdown code blocks.
+     * Tries all supported formats in order:
+     * 1. XML `<tool_call>` tags (with JSON or pure XML content)
+     * 2. Markdown JSON code blocks
      */
     fun extractToolCalls(response: String): List<ToolCall> {
         if (response.isBlank()) return emptyList()
 
         val toolCalls = mutableListOf<ToolCall>()
 
-        // 1. Try XML format: <tool_call>{"name":"...", "arguments":{...}}</tool_call>
+        // 1. Try XML format: <tool_call>...</tool_call>
         val xmlRegex = Regex("""<tool_call>\s*([\s\S]*?)\s*</tool_call>""")
         for (match in xmlRegex.findAll(response)) {
-            val parsed = parseToolCallJson(match.groupValues[1].trim())
+            val inner = match.groupValues[1].trim()
+            val parsed = parseToolCallContent(inner)
             if (parsed != null) {
                 toolCalls.add(parsed)
             }
@@ -83,10 +97,31 @@ object ToolCallExtractor {
         return cleaned.trim()
     }
 
+    // ── Parsing ─────────────────────────────────────────────────────────
+
     /**
-     * Parse a JSON string into a ToolCall.
+     * Parse the content inside a `<tool_call>` block.
      *
-     * Expected format: `{"name": "tool_name", "arguments": {"key": "value"}}`
+     * Tries JSON first, then falls back to pure XML parsing.
+     */
+    private fun parseToolCallContent(content: String): ToolCall? {
+        // Try JSON format first
+        val jsonResult = parseToolCallJson(content)
+        if (jsonResult != null) return jsonResult
+
+        // Try pure XML format:
+        // <name>tool_name</name>
+        // <arguments>
+        //   <key>value</key>
+        // </arguments>
+        val xmlResult = parseToolCallXml(content)
+        if (xmlResult != null) return xmlResult
+
+        return null
+    }
+
+    /**
+     * Parse JSON format: `{"name": "tool_name", "arguments": {"key": "value"}}`
      */
     private fun parseToolCallJson(jsonStr: String): ToolCall? {
         return try {
@@ -102,6 +137,59 @@ object ToolCallExtractor {
                 arguments[key] = when (value) {
                     is JsonPrimitive -> value.content
                     else -> value.toString()
+                }
+            }
+
+            ToolCall(name = name, arguments = arguments)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Parse pure XML format (Claude-style):
+     * ```xml
+     * <name>tool_name</name>
+     * <arguments>
+     *   <key>value</key>
+     * </arguments>
+     * ```
+     *
+     * Also handles the variant without `<arguments>` wrapper:
+     * ```xml
+     * <name>tool_name</name>
+     * <key>value</key>
+     * ```
+     */
+    private fun parseToolCallXml(content: String): ToolCall? {
+        return try {
+            // Extract <name>...</name>
+            val nameRegex = Regex("""<name>\s*(.*?)\s*</name>""")
+            val nameMatch = nameRegex.find(content) ?: return null
+            val name = nameMatch.groupValues[1].trim()
+            if (name.isEmpty()) return null
+
+            val arguments = mutableMapOf<String, String>()
+
+            // Try to find <arguments>...</arguments> block
+            val argsBlockRegex = Regex("""<arguments>\s*([\s\S]*?)\s*</arguments>""")
+            val argsBlockMatch = argsBlockRegex.find(content)
+
+            val argsContent = if (argsBlockMatch != null) {
+                argsBlockMatch.groupValues[1]
+            } else {
+                // No <arguments> block — look for XML tags after <name> in the whole content
+                content.substringAfter("</name>").trim()
+            }
+
+            // Extract all <key>value</key> pairs from the arguments content
+            val paramRegex = Regex("""<(\w+)>\s*([\s\S]*?)\s*</\1>""")
+            for (paramMatch in paramRegex.findAll(argsContent)) {
+                val key = paramMatch.groupValues[1]
+                val value = paramMatch.groupValues[2].trim()
+                // Skip nested tags like <name> (already captured)
+                if (key != "name" && key != "arguments") {
+                    arguments[key] = value
                 }
             }
 
