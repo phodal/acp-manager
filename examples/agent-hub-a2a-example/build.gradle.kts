@@ -70,6 +70,7 @@ registerRunTask("runHubServer", "com.phodal.routa.example.a2a.hub.AgentHubA2ASer
 registerRunTask("runPlannerServer", "com.phodal.routa.example.a2a.planner.PlannerA2AServerKt")
 registerRunTask("runWorkerServer", "com.phodal.routa.example.a2a.worker.WorkerA2AServerKt")
 registerRunTask("runIntegration", "com.phodal.routa.example.a2a.scenario.RunIntegrationKt")
+registerRunTask("runRealAgents", "com.phodal.routa.example.a2a.scenario.RunRealAgentsKt")
 
 tasks.withType<Test> {
     testLogging {
