@@ -39,7 +39,7 @@ class A2AToolManager(
     }
 
     // Cache of A2A clients per URL to avoid creating new clients for each request
-    private val clients = mutableMapOf<String, A2AClient>()
+    private val clients = java.util.concurrent.ConcurrentHashMap<String, A2AClient>()
 
     /**
      * Register all A2A protocol tools with the MCP server.
@@ -233,6 +233,15 @@ class A2AToolManager(
 
     private fun getOrCreateClient(agentUrl: String): A2AClient {
         return clients.getOrPut(agentUrl) { A2AClient(agentUrl) }
+    }
+
+    /**
+     * Close all cached A2A clients, releasing HTTP resources.
+     * Should be called during shutdown.
+     */
+    fun close() {
+        clients.values.forEach { it.close() }
+        clients.clear()
     }
 
     private fun toCallToolResult(result: ToolResult): CallToolResult {
