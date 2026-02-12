@@ -368,8 +368,7 @@ class GuiDispatcherViewModel(
             is OrchestratorPhase.Completed -> {
                 // Mark all as completed, but preserve CANCELLED and ERROR states
                 for (i in currentAgents.indices) {
-                    if (currentAgents[i].status != AgentStatus.ERROR && 
-                        currentAgents[i].status != AgentStatus.CANCELLED) {
+                    if (currentAgents[i].status !in setOf(AgentStatus.ERROR, AgentStatus.CANCELLED)) {
                         currentAgents[i] = currentAgents[i].copy(status = AgentStatus.COMPLETED)
                     }
                 }
