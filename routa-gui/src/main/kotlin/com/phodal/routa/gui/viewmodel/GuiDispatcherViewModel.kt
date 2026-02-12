@@ -397,12 +397,18 @@ class GuiDispatcherViewModel(
         role: AgentRole,
     ) {
         if (agents.none { it.id == agentId }) {
-            agents.add(AgentEntry(
-                id = agentId,
-                role = role,
-                displayName = agentId,
-                status = AgentStatus.PENDING
-            ))
+            // Insert before GATE to maintain correct ordering (ROUTA → CRAFTERs → GATE)
+            val gateIndex = agents.indexOfFirst { it.id == "__gate__" }
+            val insertIndex = if (gateIndex >= 0) gateIndex else agents.size
+            agents.add(
+                insertIndex,
+                AgentEntry(
+                    id = agentId,
+                    role = role,
+                    displayName = agentId,
+                    status = AgentStatus.PENDING
+                )
+            )
         }
     }
 
